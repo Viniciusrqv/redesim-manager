@@ -1,0 +1,3604 @@
+"""
+database.py
+-----------
+Setup e queries do banco. Funciona com SQLite (dev local) ou
+PostgreSQL/Supabase (produção) via camada `db.py`. A escolha é
+feita pela variável de ambiente DATABASE_URL.
+"""
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, date
+from pathlib import Path
+from typing import Iterable, Optional
+
+from config import DATABASE_PATH
+from db import get_connection, is_postgres
+
+
+# =====================================================
+# CONEXÃO
+# =====================================================
+@contextmanager
+def get_conn():
+    """Yields a connection. In dev = SQLite, in prod = Postgres.
+    Auto-commits ao sair sem erro, rollback em caso de exceção.
+    """
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+# =====================================================
+# CRIAÇÃO DAS TABELAS
+# =====================================================
+DDL = [
+    # Empresas atendidas
+    """
+    CREATE TABLE IF NOT EXISTS empresas (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        razao_social    TEXT NOT NULL,
+        cnpj            TEXT UNIQUE,
+        endereco        TEXT,
+        municipio       TEXT,
+        uf              TEXT,
+        responsavel     TEXT,
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Processos REDESIM
+    """
+    CREATE TABLE IF NOT EXISTS processos (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id      INTEGER NOT NULL,
+        protocolo       TEXT,
+        tipo            TEXT,                        -- Abertura, Alteração, Baixa, Renovação
+        status          TEXT NOT NULL DEFAULT 'Em análise',
+        risco           TEXT,                        -- Baixo / Médio / Alto
+        exige_sanitaria INTEGER DEFAULT 0,           -- 0 = NÃO, 1 = SIM
+        observacoes     TEXT,
+        ultima_movimentacao TEXT DEFAULT (date('now', 'localtime')),
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE CASCADE
+    );
+    """,
+    # CNAEs por processo
+    """
+    CREATE TABLE IF NOT EXISTS processo_cnaes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        processo_id     INTEGER NOT NULL,
+        cnae            TEXT NOT NULL,
+        descricao       TEXT,
+        principal       INTEGER DEFAULT 0,
+        FOREIGN KEY(processo_id) REFERENCES processos(id) ON DELETE CASCADE
+    );
+    """,
+    # Matriz oficial de risco do CNAE (NR-04, CGSIM 51/2019 e municipais)
+    """
+    CREATE TABLE IF NOT EXISTS cnae_risco (
+        cnae            TEXT PRIMARY KEY,            -- subclasse (9999-9/99) ou classe (99.99-9)
+        descricao       TEXT,
+        risco           TEXT NOT NULL,               -- Baixo / Médio / Alto
+        grau_risco      INTEGER,                     -- 1..4 (NR-04)
+        fonte           TEXT,                        -- NR-04 / CGSIM-51 / Municipal
+        observacoes     TEXT,
+        atualizado_em   TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Tabela de regras da Vigilância Sanitária
+    """
+    CREATE TABLE IF NOT EXISTS vigilancia_sanitaria (
+        cnae             TEXT PRIMARY KEY,
+        descricao        TEXT,
+        exige_licenca    INTEGER NOT NULL DEFAULT 0,  -- 0/1
+        risco_sanitario  TEXT,                         -- Alto/Médio/Baixo
+        nivel            TEXT,                         -- Estadual/Municipal/Federal
+        fonte            TEXT,
+        atualizado_em    TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Histórico de movimentações
+    """
+    CREATE TABLE IF NOT EXISTS movimentacoes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        processo_id     INTEGER NOT NULL,
+        de_status       TEXT,
+        para_status     TEXT,
+        usuario         TEXT,
+        comentario      TEXT,
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(processo_id) REFERENCES processos(id) ON DELETE CASCADE
+    );
+    """,
+    # Log de notificações enviadas
+    """
+    CREATE TABLE IF NOT EXISTS notificacoes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        processo_id     INTEGER,
+        canal           TEXT,                        -- telegram/sms/email
+        mensagem        TEXT,
+        sucesso         INTEGER DEFAULT 0,
+        erro            TEXT,
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Alvará / Auto de Vistoria do Corpo de Bombeiros (AVCB/CLCB)
+    """
+    CREATE TABLE IF NOT EXISTS alvaras_bombeiros (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id       INTEGER NOT NULL,
+        tipo             TEXT,                       -- AVCB / CLCB / Projeto
+        numero           TEXT,
+        data_emissao     TEXT,
+        data_vencimento  TEXT NOT NULL,
+        arquivo_pdf      TEXT,                       -- caminho do PDF salvo
+        ocupacao         TEXT,                       -- ex: F-3, A-2
+        area_construida  REAL,
+        observacoes      TEXT,
+        alertado_30d     INTEGER DEFAULT 0,
+        alertado_60d     INTEGER DEFAULT 0,
+        alertado_vencido INTEGER DEFAULT 0,
+        criado_em        TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE CASCADE
+    );
+    """,
+    # Classificação técnica CNAE → Corpo de Bombeiros (IT-01 CBPMESP)
+    # Determina se o CNAE exige AVCB/CLCB e qual o grau de risco de incêndio.
+    """
+    CREATE TABLE IF NOT EXISTS bombeiros_cnae (
+        cnae             TEXT PRIMARY KEY,              -- subclasse 9999-9/99
+        descricao        TEXT,
+        exige_avcb       INTEGER NOT NULL DEFAULT 1,    -- 0/1
+        grau_risco       TEXT,                          -- Baixo/Médio/Alto
+        ocupacao_it01    TEXT,                          -- ex: F-3, A-2, C-1
+        area_limite_m2   REAL,                          -- abaixo disso pode CLCB
+        observacao       TEXT,
+        fonte            TEXT DEFAULT 'IT-01/CBPMESP',
+        atualizado_em    TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Registro das atualizações das matrizes/normas oficiais
+    # (NR-04, CVS-SP, IT-01 CBPMESP, CGSIM, CONCLA).
+    # Cada linha = um import/atualização de uma base.
+    """
+    CREATE TABLE IF NOT EXISTS normas_atualizacao (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        base            TEXT NOT NULL,         -- 'nr04', 'cvs_sp', 'it01_cbpmesp', 'cgsim', 'concla'
+        orgao           TEXT,                  -- 'Ministério do Trabalho', 'CVS-SP', etc.
+        versao          TEXT,                  -- ex: 'Portaria 25/2017', 'Portaria CVS-SP 1/2024'
+        arquivo_origem  TEXT,                  -- nome do arquivo subido
+        hash_arquivo    TEXT,                  -- sha256 pra detectar mudanças
+        registros       INTEGER,               -- qtde de linhas importadas
+        observacoes     TEXT,
+        atualizado_por  TEXT,                  -- quem fez o import
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Tabela mestra de CNAEs (CONCLA / IBGE) — versão 2.3.
+    # Contém todos os níveis hierárquicos: seção, divisão, grupo, classe,
+    # subclasse. Usada pra validar/descrever qualquer CNAE do sistema.
+    """
+    CREATE TABLE IF NOT EXISTS cnae_concla (
+        codigo         TEXT PRIMARY KEY,           -- ex '0111-3/01' ou 'A' ou '01' ou '01.1' ou '01.11-3'
+        nivel          TEXT NOT NULL,              -- secao | divisao | grupo | classe | subclasse
+        denominacao    TEXT NOT NULL,
+        secao          TEXT,                       -- letra A-U (quando aplicável)
+        divisao        TEXT,                       -- '01' a '99' (quando aplicável)
+        grupo          TEXT,                       -- 'XX.X'
+        classe         TEXT,                       -- 'XX.XX-X'
+        atualizado_em  TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Lista de CNAEs classificados como baixo risco pela CGSIM (Resolução
+    # 59/2020 ou similar). Cada entrada indica se a atividade dispensa
+    # licenciamento prévio (baixo risco A) ou tem restrições (baixo risco B).
+    """
+    CREATE TABLE IF NOT EXISTS cgsim_cnae (
+        codigo         TEXT PRIMARY KEY,           -- ex '0111-3/01'
+        denominacao    TEXT,
+        nivel_risco    TEXT,                       -- 'Baixo Risco A' | 'Baixo Risco B' | 'Alto Risco'
+        orgao          TEXT,                       -- órgão licenciador responsável
+        observacoes    TEXT,
+        fonte          TEXT DEFAULT 'CGSIM 59/2020',
+        atualizado_em  TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Documentos diversos com validade (CND, FGTS, CNDT, Alvará Municipal,
+    # Licença Funcionamento, Contratos, etc.). Complementa a tabela de
+    # alvaras_bombeiros, que é específica do CB. Dispara alerta quando
+    # faltarem <= dias_alerta dias para o vencimento (default 45).
+    """
+    CREATE TABLE IF NOT EXISTS documentos_vencimento (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id        INTEGER NOT NULL,
+        tipo              TEXT NOT NULL,            -- CND, FGTS, CNDT, Alvará Municipal…
+        numero            TEXT,
+        descricao         TEXT,
+        data_emissao      TEXT,
+        data_vencimento   TEXT NOT NULL,
+        dias_alerta       INTEGER DEFAULT 45,
+        arquivo_pdf       TEXT,
+        status            TEXT DEFAULT 'Vigente',   -- Vigente / Vencido / Renovado / Cancelado
+        observacoes       TEXT,
+        renovado_para_id  INTEGER,                  -- id do doc que renovou esse
+        criado_em         TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE CASCADE,
+        FOREIGN KEY(renovado_para_id) REFERENCES documentos_vencimento(id)
+    );
+    """,
+    # Protocolos REDESIM (Viabilidade / Licenciamento) por empresa.
+    # Uma empresa pode ter N protocolos ao longo do tempo — cada tentativa
+    # cancelada/indeferida gera linha nova; a empresa NÃO é duplicada.
+    # Após a viabilidade ser aprovada, inicia-se o licenciamento (outro
+    # protocolo vinculado à mesma empresa).
+    """
+    CREATE TABLE IF NOT EXISTS protocolos_redesim (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id          INTEGER NOT NULL,
+        tipo                TEXT NOT NULL,           -- 'Viabilidade' | 'Licenciamento'
+        numero_protocolo    TEXT NOT NULL,           -- ex: SPM2630216399
+        numero_solicitacao  TEXT,                    -- nº interno (ex: 5218890)
+        data_solicitacao    TEXT,                    -- YYYY-MM-DD
+        evento              TEXT,                    -- ex: '999 - Regularização de Empresa'
+        orgao_registro      TEXT,                    -- Junta Comercial / Prefeitura / ...
+        status              TEXT NOT NULL,           -- Aprovada / Cancelada / Pendente / Indeferida / Concluída / Inativa / Em análise
+        observacoes         TEXT,
+        substituido_por_id  INTEGER,                 -- id do protocolo que substituiu este (mantém histórico)
+        criado_em           TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE CASCADE,
+        FOREIGN KEY(substituido_por_id) REFERENCES protocolos_redesim(id) ON DELETE SET NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_protocolos_empresa
+    ON protocolos_redesim(empresa_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_protocolos_numero
+    ON protocolos_redesim(numero_protocolo);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_protocolos_status
+    ON protocolos_redesim(status);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS tarefas_gestta (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        gestta_id           TEXT,                    -- _id no GESTTA (chave da API)
+        gestta_customer_id  TEXT,
+        gestta_owner_id     TEXT,
+        tarefa_nome         TEXT NOT NULL,
+        cliente_nome        TEXT NOT NULL,
+        cliente_norm        TEXT NOT NULL,
+        responsavel         TEXT,
+        atrasada            TEXT,
+        status_gestta       TEXT,
+        departamento        TEXT,
+        subtype             TEXT,
+        due_date            TEXT,                    -- ISO date
+        competence_date     TEXT,
+        created_at          TEXT,
+        legal_date          TEXT,
+        total_step          INTEGER,
+        done_step           INTEGER,
+        overdue             INTEGER,                 -- 0/1
+        fine                INTEGER,
+        done_overdue        INTEGER,
+        done_fine           INTEGER,
+        risco               TEXT,
+        motivo_risco        TEXT,
+        empresa_id          INTEGER,
+        protocolo_id        INTEGER,
+        resolvida           INTEGER DEFAULT 0,
+        data_import         TEXT DEFAULT (datetime('now', 'localtime')),
+        origem_arquivo      TEXT,
+        criado_em           TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE SET NULL,
+        FOREIGN KEY(protocolo_id) REFERENCES protocolos_redesim(id) ON DELETE SET NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_gestta_cliente_norm
+    ON tarefas_gestta(cliente_norm);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_gestta_resolvida
+    ON tarefas_gestta(resolvida);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_gestta_risco
+    ON tarefas_gestta(risco);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_gestta_responsavel
+    ON tarefas_gestta(responsavel);
+    """,
+    # Histórico LOCAL de anotações em tarefas GESTTA — não substitui as
+    # do GESTTA, é uma camada nossa que persiste mesmo se a sincronização
+    # apagar/recriar a tarefa. Tipo: 'NOTA', 'STATUS_CHANGE', 'CONCLUSAO'.
+    """
+    CREATE TABLE IF NOT EXISTS gestta_anotacao_local (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        gestta_id     TEXT NOT NULL,         -- _id da tarefa no GESTTA
+        tipo          TEXT NOT NULL DEFAULT 'NOTA',
+        texto         TEXT NOT NULL,
+        replicado     INTEGER NOT NULL DEFAULT 0,  -- 0/1 — foi enviado pro GESTTA?
+        replicado_em  TEXT,
+        erro_replicar TEXT,
+        criado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        usuario       TEXT
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_anotacao_gestta_id
+    ON gestta_anotacao_local(gestta_id);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pendencias (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id          INTEGER,                           -- nullable: serviço avulso fica NULL
+        cliente_avulso      TEXT,                              -- nome do cliente quando empresa_id IS NULL
+        assunto             TEXT NOT NULL,
+        descricao           TEXT,
+        prioridade          TEXT NOT NULL DEFAULT 'Média',     -- Alta / Média / Baixa
+        status              TEXT NOT NULL DEFAULT 'Aberta',    -- Aberta / Em andamento / Aguardando terceiro / Resolvida / Cancelada
+        data_inicio         TEXT NOT NULL DEFAULT (date('now', 'localtime')),
+        data_limite         TEXT,                              -- prazo final (opcional)
+        dias_alerta         INTEGER NOT NULL DEFAULT 7,        -- alerta a cada X dias parados
+        ultima_atualizacao  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        resolvida           INTEGER NOT NULL DEFAULT 0,        -- 0/1 (cache para queries)
+        criado_em           TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_pendencias_empresa
+    ON pendencias(empresa_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_pendencias_status
+    ON pendencias(status);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_pendencias_resolvida
+    ON pendencias(resolvida);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pendencia_movimentos (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        pendencia_id  INTEGER NOT NULL,
+        tipo          TEXT NOT NULL DEFAULT 'nota',  -- nota / status / contato / retorno
+        texto         TEXT NOT NULL,
+        criado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(pendencia_id) REFERENCES pendencias(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_pend_mov_pendencia
+    ON pendencia_movimentos(pendencia_id);
+    """,
+    # =========================================================
+    # CONSULTOR DE CNAE — bases auxiliares (Conselhos, Ambiental, ANVISA)
+    # =========================================================
+    """
+    CREATE TABLE IF NOT EXISTS cnae_conselho (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnae            TEXT NOT NULL,
+        conselho_sigla  TEXT NOT NULL,
+        conselho_nome   TEXT,
+        obrigatoriedade TEXT NOT NULL DEFAULT 'OBRIGATORIO',
+        tipo_registro   TEXT,                  -- INSCRICAO_PJ / RT_OBRIGATORIO / AMBOS
+        observacao      TEXT,
+        fonte           TEXT,
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em   TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cnae_conselho_cnae
+    ON cnae_conselho(cnae);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cnae_ambiental (
+        cnae            TEXT PRIMARY KEY,
+        exige_licenca   INTEGER NOT NULL DEFAULT 0,  -- 0/1
+        orgao           TEXT,                  -- 'CETESB', 'IBAMA', 'SECRETARIA_MUNICIPAL'
+        porte_padrao    TEXT,                  -- P / M / G (ou texto livre)
+        tipo_licenca    TEXT,                  -- LP / LI / LO / LP+LI+LO etc
+        observacao      TEXT,
+        fonte           TEXT,                  -- 'Decreto Estadual 47.397/02' / 'Resolução CONAMA 237'
+        atualizado_em   TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cnae_anvisa (
+        cnae            TEXT PRIMARY KEY,
+        exige_anvisa    INTEGER NOT NULL DEFAULT 0,
+        categoria       TEXT,                  -- 'Alimentos', 'Cosméticos', 'Saneantes', 'Medicamentos', 'Produtos para Saúde'
+        observacao      TEXT,
+        fonte           TEXT,
+        atualizado_em   TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    # Outros registros federais/setoriais (CTF/IBAMA, MAPA, INMETRO,
+    # ANATEL, ANP, etc.) — tabela genérica pra expandir sem schema novo.
+    """
+    CREATE TABLE IF NOT EXISTS cnae_outros_registros (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnae            TEXT NOT NULL,
+        orgao           TEXT NOT NULL,         -- CTF_IBAMA / MAPA / INMETRO / ANATEL / ANP / etc
+        orgao_nome      TEXT,                  -- nome completo (ex: 'IBAMA - Cadastro Técnico Federal')
+        categoria       TEXT,                  -- subdivisão dentro do órgão
+        obrigatoriedade TEXT NOT NULL DEFAULT 'OBRIGATORIO', -- OBRIGATORIO / OPCIONAL / DEPENDE
+        observacao      TEXT,
+        fonte           TEXT,
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em   TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_outros_reg_cnae
+    ON cnae_outros_registros(cnae);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_outros_reg_orgao
+    ON cnae_outros_registros(orgao);
+    """,
+    # Habilitação profissional CONDICIONAL — casos onde o CNAE em si NÃO
+    # obriga a PJ a se registrar em conselho, mas atividades exercidas
+    # dentro dele exigem profissional habilitado (ex.: aplicação de botox
+    # em CNAE de estética; venda de medicamentos em comércio varejista;
+    # corretagem de seguros em atividades de intermediação).
+    # Quem fiscaliza não é o registro da empresa — é a exigência do
+    # exercício profissional pelos conselhos / leis específicas.
+    """
+    CREATE TABLE IF NOT EXISTS cnae_habilitacao_profissional (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnae              TEXT NOT NULL,
+        atividade_gatilho TEXT NOT NULL,   -- 'aplicação de toxina botulínica'
+        conselho_sigla    TEXT,             -- CRM / COREN / CRBM / CRF / etc
+        quem_executa      TEXT NOT NULL,    -- 'médico ou enfermeiro habilitado'
+        nivel_risco       TEXT NOT NULL DEFAULT 'ALTO',  -- ALTO / MEDIO / BAIXO
+        fonte             TEXT,             -- 'Resolução CFM 2.219/2018'
+        observacao        TEXT,
+        criado_em         TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(cnae, atividade_gatilho)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_hab_prof_cnae
+    ON cnae_habilitacao_profissional(cnae);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cnae_verificacao (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnae                TEXT NOT NULL,
+        data_verificacao    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        resultado           TEXT NOT NULL,             -- APROVADO / DIVERGENCIA / NOVAS_INFOS
+        divergencias_count  INTEGER NOT NULL DEFAULT 0,
+        relatorio           TEXT,                       -- texto do relatório do sub-agente
+        fonte               TEXT,                       -- 'Sub-agente Cowork', 'Manual', etc
+        verificado_por      TEXT                        -- nome do usuário que validou
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cnae_verif_cnae
+    ON cnae_verificacao(cnae);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cnae_verif_data
+    ON cnae_verificacao(data_verificacao);
+    """,
+    # Histórico de consultas que o Eduardo faz na página (alimenta o
+    # alerta semanal: prioriza verificação de CNAEs MAIS consultados).
+    """
+    CREATE TABLE IF NOT EXISTS cnae_consulta_log (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnae              TEXT NOT NULL,
+        consultado_em     TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        contexto          TEXT
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cnae_consulta_cnae
+    ON cnae_consulta_log(cnae);
+    """,
+]
+
+
+def init_db() -> None:
+    """Cria tabelas se não existirem e popula mocks na 1ª execução."""
+    with get_conn() as conn:
+        for stmt in DDL:
+            conn.executescript(stmt)
+        # Em Postgres (produção), as migrações já foram feitas pelo
+        # script `migrar_sqlite_para_supabase.py`. As funções _migrar()
+        # e _popular_mocks() usam sintaxe específica do SQLite
+        # (PRAGMA, OR IGNORE, sqlite3.OperationalError), então só
+        # rodam em modo dev local.
+        if not is_postgres():
+            _migrar(conn)
+            _popular_mocks(conn)
+
+
+def _migrar(conn: sqlite3.Connection) -> None:
+    """Adiciona colunas novas em bancos criados antes das mudanças."""
+    # vigilancia_sanitaria.risco_sanitario
+    cols_vig = {r["name"] for r in conn.execute("PRAGMA table_info(vigilancia_sanitaria);")}
+    if "risco_sanitario" not in cols_vig:
+        try:
+            conn.execute("ALTER TABLE vigilancia_sanitaria ADD COLUMN risco_sanitario TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+    # cnae_risco.grau_risco e cnae_risco.fonte (NR-04)
+    cols_risco = {r["name"] for r in conn.execute("PRAGMA table_info(cnae_risco);")}
+    if "grau_risco" not in cols_risco:
+        try:
+            conn.execute("ALTER TABLE cnae_risco ADD COLUMN grau_risco INTEGER;")
+        except sqlite3.OperationalError:
+            pass
+    if "fonte" not in cols_risco:
+        try:
+            conn.execute("ALTER TABLE cnae_risco ADD COLUMN fonte TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+    # processos.canal_redesim (Online / Presencial / Hibrido)
+    cols_proc = {r["name"] for r in conn.execute("PRAGMA table_info(processos);")}
+    if "canal_redesim" not in cols_proc:
+        try:
+            conn.execute("ALTER TABLE processos ADD COLUMN canal_redesim TEXT DEFAULT 'Online';")
+        except sqlite3.OperationalError:
+            pass
+    if "motivo_presencial" not in cols_proc:
+        try:
+            conn.execute("ALTER TABLE processos ADD COLUMN motivo_presencial TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+    # protocolos_redesim.substituido_por_id (rastreio de substituições)
+    try:
+        cols_pr = {r["name"] for r in conn.execute("PRAGMA table_info(protocolos_redesim);")}
+    except sqlite3.OperationalError:
+        cols_pr = set()
+    if cols_pr and "substituido_por_id" not in cols_pr:
+        try:
+            conn.execute(
+                "ALTER TABLE protocolos_redesim ADD COLUMN substituido_por_id INTEGER;"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    # cnae_conselho — adiciona tipo_registro em bancos antigos
+    try:
+        cols_conselho = {r["name"] for r in conn.execute("PRAGMA table_info(cnae_conselho);")}
+    except sqlite3.OperationalError:
+        cols_conselho = set()
+    if cols_conselho and "tipo_registro" not in cols_conselho:
+        try:
+            conn.execute(
+                "ALTER TABLE cnae_conselho ADD COLUMN tipo_registro TEXT;"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    # tarefas_gestta — campos vindos da API REST (gestta_id, due_date, etc.)
+    try:
+        cols_g = {r["name"] for r in conn.execute("PRAGMA table_info(tarefas_gestta);")}
+    except sqlite3.OperationalError:
+        cols_g = set()
+    if cols_g:
+        novas_g = [
+            ("gestta_id", "TEXT"),         # _id da tarefa no GESTTA (chave única)
+            ("gestta_customer_id", "TEXT"),
+            ("gestta_owner_id", "TEXT"),
+            ("subtype", "TEXT"),
+            ("due_date", "TEXT"),          # ISO string
+            ("competence_date", "TEXT"),
+            ("created_at", "TEXT"),
+            ("legal_date", "TEXT"),
+            ("total_step", "INTEGER"),
+            ("done_step", "INTEGER"),
+            ("overdue", "INTEGER"),        # bool 0/1
+            ("fine", "INTEGER"),           # bool 0/1
+            ("done_overdue", "INTEGER"),
+            ("done_fine", "INTEGER"),
+        ]
+        for col, tipo in novas_g:
+            if col not in cols_g:
+                try:
+                    conn.execute(f"ALTER TABLE tarefas_gestta ADD COLUMN {col} {tipo};")
+                except sqlite3.OperationalError:
+                    pass
+
+    # pendencias.cliente_avulso (serviço avulso sem empresa cadastrada)
+    # + tornar empresa_id NULLABLE (precisa recriar tabela porque
+    # SQLite não permite alterar NOT NULL via ALTER COLUMN).
+    try:
+        cols_pend = {r["name"] for r in conn.execute("PRAGMA table_info(pendencias);")}
+    except sqlite3.OperationalError:
+        cols_pend = set()
+    if cols_pend and "cliente_avulso" not in cols_pend:
+        try:
+            conn.execute(
+                "ALTER TABLE pendencias ADD COLUMN cliente_avulso TEXT;"
+            )
+        except sqlite3.OperationalError:
+            pass
+    # Recria tabela com empresa_id NULLABLE — só executa se ainda
+    # estiver com NOT NULL.
+    if cols_pend:
+        info = conn.execute("PRAGMA table_info(pendencias);").fetchall()
+        emp_col = next((r for r in info if r["name"] == "empresa_id"), None)
+        if emp_col and emp_col["notnull"] == 1:
+            try:
+                conn.executescript("""
+                    PRAGMA foreign_keys=off;
+                    BEGIN TRANSACTION;
+                    CREATE TABLE pendencias_new (
+                        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                        empresa_id          INTEGER,
+                        cliente_avulso      TEXT,
+                        assunto             TEXT NOT NULL,
+                        descricao           TEXT,
+                        prioridade          TEXT NOT NULL DEFAULT 'Média',
+                        status              TEXT NOT NULL DEFAULT 'Aberta',
+                        data_inicio         TEXT NOT NULL DEFAULT (date('now', 'localtime')),
+                        data_limite         TEXT,
+                        dias_alerta         INTEGER NOT NULL DEFAULT 7,
+                        ultima_atualizacao  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                        resolvida           INTEGER NOT NULL DEFAULT 0,
+                        criado_em           TEXT DEFAULT (datetime('now', 'localtime')),
+                        atualizado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+                        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE CASCADE
+                    );
+                    INSERT INTO pendencias_new (
+                        id, empresa_id, cliente_avulso, assunto, descricao,
+                        prioridade, status, data_inicio, data_limite, dias_alerta,
+                        ultima_atualizacao, resolvida, criado_em, atualizado_em
+                    )
+                    SELECT id, empresa_id, NULL, assunto, descricao,
+                           prioridade, status, data_inicio, data_limite, dias_alerta,
+                           ultima_atualizacao, resolvida, criado_em, atualizado_em
+                      FROM pendencias;
+                    DROP TABLE pendencias;
+                    ALTER TABLE pendencias_new RENAME TO pendencias;
+                    CREATE INDEX IF NOT EXISTS idx_pendencias_empresa ON pendencias(empresa_id);
+                    CREATE INDEX IF NOT EXISTS idx_pendencias_status ON pendencias(status);
+                    CREATE INDEX IF NOT EXISTS idx_pendencias_resolvida ON pendencias(resolvida);
+                    COMMIT;
+                    PRAGMA foreign_keys=on;
+                """)
+            except sqlite3.OperationalError:
+                pass
+
+
+# =====================================================
+# DADOS MOCK PARA AS MATRIZES
+# =====================================================
+CNAE_RISCO_MOCK = [
+    # (cnae, descricao, risco)
+    ("4711-3/02", "Comércio varejista de mercadorias em geral - supermercados", "Médio"),
+    ("4721-1/02", "Padaria e confeitaria com predominância de revenda", "Alto"),
+    ("5611-2/01", "Restaurantes e similares", "Alto"),
+    ("5611-2/03", "Lanchonetes, casas de chá, sucos e similares", "Médio"),
+    ("4781-4/00", "Comércio varejista de artigos do vestuário e acessórios", "Baixo"),
+    ("6920-6/01", "Atividades de contabilidade", "Baixo"),
+    ("8630-5/03", "Atividade médica ambulatorial restrita a consultas", "Alto"),
+    ("9602-5/01", "Cabeleireiros, manicure e pedicure", "Médio"),
+    ("4530-7/03", "Comércio a varejo de peças e acessórios novos para veículos automotores", "Baixo"),
+    ("8599-6/04", "Treinamento em desenvolvimento profissional e gerencial", "Baixo"),
+]
+
+VIGILANCIA_SANITARIA_MOCK = [
+    # (cnae, descricao, exige_licenca, nivel)
+    ("4711-3/02", "Supermercados", 1, "Municipal"),
+    ("4721-1/02", "Padaria e confeitaria", 1, "Municipal"),
+    ("5611-2/01", "Restaurantes e similares", 1, "Municipal"),
+    ("5611-2/03", "Lanchonetes", 1, "Municipal"),
+    ("8630-5/03", "Atividade médica ambulatorial", 1, "Estadual"),
+    ("9602-5/01", "Salões de beleza", 1, "Municipal"),
+    ("4781-4/00", "Vestuário", 0, None),
+    ("6920-6/01", "Contabilidade", 0, None),
+    ("4530-7/03", "Peças automotivas", 0, None),
+    ("8599-6/04", "Treinamentos", 0, None),
+]
+
+# -----------------------------------------------------------
+# BOMBEIROS — seed da IT-01/2019 do CBPMESP (São Paulo).
+# -----------------------------------------------------------
+# Interpretação da classificação de ocupação (IT-01, Tabela 1):
+#   A = Residencial          (A-1 unifamiliar, A-2 multifamiliar, A-3 coletivo)
+#   B = Serviços de hospedagem
+#   C = Comercial            (C-1 baixa, C-2 média, C-3 grande carga incêndio)
+#   D = Serviços profissionais (escritórios, consultórios, clínicas)
+#   E = Educacional
+#   F = Local de reunião pública
+#   G = Serviço automotivo
+#   H = Serviço de saúde e institucional
+#   I = Industrial           (I-1 baixo, I-2 médio, I-3 alto risco)
+#   J = Depósito             (J-1 baixo, J-2 médio, J-3/J-4 alto)
+#   L = Explosivos
+#   M = Especial (inflamáveis, silos, terminais)
+#
+# Regra simplificada (Decreto SP 63.911/2018 + IT-01):
+#   - Edificações ≤ 250 m² e até 2 pavimentos com baixa carga de incêndio
+#     dispensam AVCB (precisam só de CLCB).
+#   - Acima disso, ou com alto risco, exige AVCB.
+# Para efeito do seed colocamos o cenário TÍPICO (empresa comum).
+# (cnae, descricao, exige_avcb, grau_risco, ocupacao, area_limite_m2, obs, fonte)
+BOMBEIROS_CNAE_SEED = [
+    # ---------- Escritórios / Serviços profissionais (D) ----------
+    ("6920-6/01", "Atividades de contabilidade", 1, "Baixo", "D-1", 750,
+     "Até 750 m² e 2 pavimentos pode ser CLCB", "IT-01/CBPMESP"),
+    ("6920-6/02", "Atividades de consultoria", 1, "Baixo", "D-1", 750,
+     "Até 750 m² e 2 pavimentos pode ser CLCB", "IT-01/CBPMESP"),
+    ("6911-7/01", "Serviços advocatícios", 1, "Baixo", "D-1", 750,
+     "Até 750 m² e 2 pavimentos pode ser CLCB", "IT-01/CBPMESP"),
+    ("6911-7/03", "Agente de propriedade industrial", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("7020-4/00", "Atividades de consultoria em gestão empresarial", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("7490-1/04", "Atividades de intermediação e agenciamento", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("8211-3/00", "Serviços combinados de escritório", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("8599-6/04", "Treinamento em desenvolvimento profissional", 1, "Baixo", "E-6", 500,
+     "Educacional — AVCB sempre exigido acima de 500 m²", "IT-01/CBPMESP"),
+    # ---------- Software / TI ----------
+    ("6201-5/01", "Desenvolvimento de programas de computador sob encomenda", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("6202-3/00", "Desenvolvimento e licenciamento de software customizável", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("6203-1/00", "Desenvolvimento e licenciamento de software não-customizável", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("6204-0/00", "Consultoria em TI", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    # ---------- Saúde (H-2/H-3) ----------
+    ("8630-5/03", "Atividade médica ambulatorial", 1, "Médio", "H-2", None,
+     "Ambulatório — AVCB exigido", "IT-01/CBPMESP"),
+    ("8630-5/01", "Atividade médica com recursos de apoio diagnóstico", 1, "Médio", "H-2", None, None, "IT-01/CBPMESP"),
+    ("8610-1/01", "Atividades de atendimento hospitalar (exceto pronto-socorro)", 1, "Alto", "H-3", None,
+     "Hospital — alto risco, AVCB obrigatório", "IT-01/CBPMESP"),
+    ("8610-1/02", "Pronto-socorro e unidades hospitalares para atendimento a urgências", 1, "Alto", "H-3", None, None, "IT-01/CBPMESP"),
+    ("8630-5/02", "Atividade médica com recursos para realização de procedimentos cirúrgicos", 1, "Alto", "H-3", None, None, "IT-01/CBPMESP"),
+    ("8650-0/04", "Atividades de fisioterapia", 1, "Baixo", "H-2", 750, None, "IT-01/CBPMESP"),
+    ("8650-0/02", "Atividades de profissionais da nutrição", 1, "Baixo", "D-2", 750, None, "IT-01/CBPMESP"),
+    ("8640-2/01", "Laboratórios de anatomia patológica e citológica", 1, "Médio", "H-2", None, None, "IT-01/CBPMESP"),
+    ("8640-2/02", "Laboratórios clínicos", 1, "Médio", "H-2", None, None, "IT-01/CBPMESP"),
+    ("8630-5/04", "Atividade odontológica", 1, "Baixo", "D-2", 750, None, "IT-01/CBPMESP"),
+    ("7500-1/00", "Atividades veterinárias", 1, "Médio", "H-2", None, None, "IT-01/CBPMESP"),
+    # ---------- Comércio varejista (C-1 / C-2) ----------
+    ("4711-3/02", "Supermercados", 1, "Médio", "C-2", None,
+     "Supermercado — AVCB exigido", "IT-01/CBPMESP"),
+    ("4711-3/01", "Hipermercados", 1, "Alto", "C-3", None, None, "IT-01/CBPMESP"),
+    ("4712-1/00", "Minimercados, mercearias e armazéns", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4721-1/02", "Padaria e confeitaria com predominância de revenda", 1, "Médio", "C-2", None,
+     "Forno a lenha/elétrico exige AVCB", "IT-01/CBPMESP"),
+    ("4721-1/03", "Comércio varejista de laticínios e frios", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4722-9/01", "Comércio varejista de carnes — açougues", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4761-0/01", "Comércio varejista de livros", 1, "Médio", "C-2", None,
+     "Livros — alta carga de incêndio, AVCB exigido acima de 300 m²",
+     "IT-01/CBPMESP"),
+    ("4761-0/02", "Comércio varejista de jornais e revistas", 1, "Médio", "C-2", None, None, "IT-01/CBPMESP"),
+    ("4781-4/00", "Comércio varejista de artigos do vestuário e acessórios", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4782-2/01", "Comércio varejista de calçados", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4744-0/01", "Comércio varejista de ferragens e ferramentas", 1, "Médio", "C-2", None, None, "IT-01/CBPMESP"),
+    ("4744-0/05", "Comércio varejista de materiais de construção em geral", 1, "Médio", "C-2", None, None, "IT-01/CBPMESP"),
+    ("4744-0/06", "Comércio varejista de pedras para revestimento", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4751-2/00", "Comércio varejista de equipamentos de informática", 1, "Médio", "C-2", None, None, "IT-01/CBPMESP"),
+    ("4754-7/01", "Comércio varejista de móveis", 1, "Médio", "C-2", None,
+     "Móveis — alta carga de incêndio", "IT-01/CBPMESP"),
+    ("4763-6/02", "Comércio varejista de artigos esportivos", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4772-5/00", "Comércio varejista de cosméticos, perfumaria e higiene", 1, "Médio", "C-2", None,
+     "Produtos inflamáveis (aerosóis) — AVCB", "IT-01/CBPMESP"),
+    ("4773-3/00", "Comércio varejista de artigos médicos e ortopédicos", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4774-1/00", "Comércio varejista de artigos de óptica", 1, "Baixo", "C-1", 750, None, "IT-01/CBPMESP"),
+    ("4789-0/05", "Comércio varejista de produtos saneantes domissanitários", 1, "Médio", "C-2", None, None, "IT-01/CBPMESP"),
+    # ---------- Postos e automotivo ----------
+    ("4731-8/00", "Comércio varejista de combustíveis para veículos automotores", 1, "Alto", "M-1", None,
+     "Posto de gasolina — alto risco, AVCB obrigatório + IT específica", "IT-01/CBPMESP"),
+    ("4530-7/03", "Comércio a varejo de peças e acessórios novos para veículos", 1, "Baixo", "G-2", 750, None, "IT-01/CBPMESP"),
+    ("4520-0/01", "Serviços de manutenção e reparação mecânica de veículos", 1, "Médio", "G-3", None,
+     "Oficina mecânica — AVCB exigido", "IT-01/CBPMESP"),
+    ("4520-0/05", "Serviços de lavagem, lubrificação e polimento", 1, "Médio", "G-3", None, None, "IT-01/CBPMESP"),
+    # ---------- Bares, restaurantes e reunião ----------
+    ("5611-2/01", "Restaurantes e similares", 1, "Médio", "F-8", None,
+     "Reunião de público — AVCB obrigatório", "IT-01/CBPMESP"),
+    ("5611-2/02", "Bares e outros estabelecimentos especializados em servir bebidas", 1, "Médio", "F-8", None, None, "IT-01/CBPMESP"),
+    ("5611-2/03", "Lanchonetes, casas de chá, sucos e similares", 1, "Médio", "F-8", None, None, "IT-01/CBPMESP"),
+    ("5612-1/00", "Serviços ambulantes de alimentação", 0, "Baixo", None, None,
+     "Ambulante — dispensado de AVCB", "IT-01/CBPMESP"),
+    ("5620-1/01", "Fornecimento de alimentos preparados para empresas", 1, "Médio", "F-8", None, None, "IT-01/CBPMESP"),
+    # ---------- Beleza / bem-estar ----------
+    ("9602-5/01", "Cabeleireiros, manicure e pedicure", 1, "Baixo", "D-2", 750, None, "IT-01/CBPMESP"),
+    ("9602-5/02", "Atividades de estética e outros serviços de cuidados com a beleza", 1, "Baixo", "D-2", 750, None, "IT-01/CBPMESP"),
+    ("9313-1/00", "Atividades de condicionamento físico (academias)", 1, "Médio", "F-3", None,
+     "Academia — reunião pública, AVCB exigido", "IT-01/CBPMESP"),
+    # ---------- Hospedagem ----------
+    ("5510-8/01", "Hotéis", 1, "Alto", "B-1", None, None, "IT-01/CBPMESP"),
+    ("5510-8/02", "Apart-hotéis", 1, "Alto", "B-1", None, None, "IT-01/CBPMESP"),
+    ("5510-8/03", "Motéis", 1, "Alto", "B-2", None, None, "IT-01/CBPMESP"),
+    # ---------- Educacional ----------
+    ("8511-2/00", "Educação infantil — creche", 1, "Alto", "E-6", None,
+     "Creche — alto risco, AVCB obrigatório", "IT-01/CBPMESP"),
+    ("8512-1/00", "Educação infantil — pré-escola", 1, "Alto", "E-6", None, None, "IT-01/CBPMESP"),
+    ("8513-9/00", "Ensino fundamental", 1, "Médio", "E-1", None, None, "IT-01/CBPMESP"),
+    ("8520-1/00", "Ensino médio", 1, "Médio", "E-1", None, None, "IT-01/CBPMESP"),
+    ("8531-7/00", "Educação superior — graduação", 1, "Médio", "E-5", None, None, "IT-01/CBPMESP"),
+    ("8591-1/00", "Ensino de esportes", 1, "Médio", "F-3", None, None, "IT-01/CBPMESP"),
+    ("8593-7/00", "Ensino de idiomas", 1, "Baixo", "E-3", 500, None, "IT-01/CBPMESP"),
+    # ---------- Depósitos / atacado ----------
+    ("5211-7/01", "Armazéns gerais — emissão de warrant", 1, "Alto", "J-3", None,
+     "Depósito — alto risco, AVCB", "IT-01/CBPMESP"),
+    ("5211-7/02", "Guarda-móveis", 1, "Médio", "J-2", None, None, "IT-01/CBPMESP"),
+    ("5211-7/99", "Depósitos de mercadorias para terceiros, exceto armazéns gerais", 1, "Médio", "J-2", None, None, "IT-01/CBPMESP"),
+    ("4635-4/02", "Comércio atacadista de cerveja, chope e refrigerante", 1, "Médio", "J-2", None, None, "IT-01/CBPMESP"),
+    # ---------- Indústria (I-1/I-2/I-3) — típicas ----------
+    ("1091-1/01", "Fabricação de produtos de panificação industrial", 1, "Médio", "I-2", None, None, "IT-01/CBPMESP"),
+    ("1412-6/02", "Confecção, sob medida, de peças do vestuário", 1, "Baixo", "I-1", 750, None, "IT-01/CBPMESP"),
+    ("1813-0/99", "Impressão de material para outros usos", 1, "Médio", "I-2", None, None, "IT-01/CBPMESP"),
+    ("2599-3/99", "Fabricação de produtos diversos de metal", 1, "Médio", "I-2", None, None, "IT-01/CBPMESP"),
+    # ---------- Construção ----------
+    ("4120-4/00", "Construção de edifícios", 0, "—", None, None,
+     "Atividade de obra — AVCB é do CLIENTE final, não da construtora",
+     "IT-01/CBPMESP"),
+    ("4399-1/03", "Obras de alvenaria", 0, "—", None, None, None, "IT-01/CBPMESP"),
+    # ---------- Logística e transporte ----------
+    ("4930-2/01", "Transporte rodoviário de carga, municipal", 1, "Médio", "G-4", None, None, "IT-01/CBPMESP"),
+    ("4930-2/02", "Transporte rodoviário de carga, intermunicipal", 1, "Médio", "G-4", None, None, "IT-01/CBPMESP"),
+    # ---------- Atividades artísticas / eventos ----------
+    ("8230-0/01", "Serviços de organização de feiras, congressos e festas", 1, "Alto", "F-6", None,
+     "Eventos — reunião pública, AVCB obrigatório + AVL específico",
+     "IT-01/CBPMESP"),
+    ("8230-0/02", "Casas de festas e eventos", 1, "Alto", "F-6", None, None, "IT-01/CBPMESP"),
+    ("9001-9/01", "Produção teatral", 1, "Alto", "F-6", None, None, "IT-01/CBPMESP"),
+    ("5914-6/00", "Atividades de exibição cinematográfica", 1, "Alto", "F-5", None, None, "IT-01/CBPMESP"),
+    # ---------- Edição (não é comércio, mas algumas empresas usam) ----------
+    ("5811-5/00", "Edição de livros", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+    ("5812-3/00", "Edição de jornais", 1, "Baixo", "D-1", 750, None, "IT-01/CBPMESP"),
+]
+
+
+def _popular_mocks(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("SELECT COUNT(*) AS c FROM cnae_risco;")
+    if cur.fetchone()["c"] == 0:
+        conn.executemany(
+            "INSERT OR IGNORE INTO cnae_risco (cnae, descricao, risco) VALUES (?,?,?)",
+            CNAE_RISCO_MOCK,
+        )
+    cur = conn.execute("SELECT COUNT(*) AS c FROM vigilancia_sanitaria;")
+    if cur.fetchone()["c"] == 0:
+        conn.executemany(
+            "INSERT OR IGNORE INTO vigilancia_sanitaria "
+            "(cnae, descricao, exige_licenca, nivel) VALUES (?,?,?,?)",
+            VIGILANCIA_SANITARIA_MOCK,
+        )
+    cur = conn.execute("SELECT COUNT(*) AS c FROM bombeiros_cnae;")
+    if cur.fetchone()["c"] == 0:
+        conn.executemany(
+            "INSERT OR IGNORE INTO bombeiros_cnae "
+            "(cnae, descricao, exige_avcb, grau_risco, ocupacao_it01, "
+            " area_limite_m2, observacao, fonte) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            BOMBEIROS_CNAE_SEED,
+        )
+
+
+# =====================================================
+# QUERIES DE ALTO NÍVEL
+# =====================================================
+STATUS_VALIDOS = [
+    "Em análise",
+    "Pendente de Documento",
+    "Aguardando Vigilância Sanitária",
+    "Aguardando Bombeiros",
+    "Aguardando Prefeitura",
+    "Deferido",
+    "Indeferido",
+    "Arquivado",
+]
+
+
+def listar_empresas():
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM empresas ORDER BY razao_social"
+        )]
+
+
+def criar_empresa(razao_social, cnpj=None, endereco=None,
+                  municipio=None, uf=None, responsavel=None):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO empresas (razao_social, cnpj, endereco, municipio, uf, responsavel)
+               VALUES (?,?,?,?,?,?)""",
+            (razao_social, cnpj, endereco, municipio, uf, responsavel),
+        )
+        return cur.lastrowid
+
+
+def listar_processos():
+    sql = """
+        SELECT p.*, e.razao_social, e.cnpj,
+               julianday('now') - julianday(p.ultima_movimentacao) AS dias_parado
+        FROM processos p
+        JOIN empresas e ON e.id = p.empresa_id
+        ORDER BY dias_parado DESC, p.id DESC
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql)]
+
+
+def criar_processo(empresa_id, protocolo, tipo, status="Em análise",
+                   risco=None, exige_sanitaria=0, observacoes=None,
+                   canal_redesim="Online", motivo_presencial=None,
+                   cnaes: Optional[Iterable[dict]] = None):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO processos
+               (empresa_id, protocolo, tipo, status, risco, exige_sanitaria,
+                observacoes, canal_redesim, motivo_presencial)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (empresa_id, protocolo, tipo, status, risco, exige_sanitaria,
+             observacoes, canal_redesim, motivo_presencial),
+        )
+        proc_id = cur.lastrowid
+        if cnaes:
+            conn.executemany(
+                """INSERT INTO processo_cnaes (processo_id, cnae, descricao, principal)
+                   VALUES (?,?,?,?)""",
+                [(proc_id, c["cnae"], c.get("descricao"), int(c.get("principal", 0)))
+                 for c in cnaes],
+            )
+        return proc_id
+
+
+def atualizar_status(processo_id, novo_status, comentario=None, usuario="sistema"):
+    with get_conn() as conn:
+        atual = conn.execute(
+            "SELECT status FROM processos WHERE id = ?", (processo_id,)
+        ).fetchone()
+        if not atual:
+            return False
+        conn.execute(
+            """UPDATE processos
+               SET status = ?, ultima_movimentacao = date('now','localtime')
+               WHERE id = ?""",
+            (novo_status, processo_id),
+        )
+        conn.execute(
+            """INSERT INTO movimentacoes (processo_id, de_status, para_status, usuario, comentario)
+               VALUES (?,?,?,?,?)""",
+            (processo_id, atual["status"], novo_status, usuario, comentario),
+        )
+        return True
+
+
+def cnaes_do_processo(processo_id):
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM processo_cnaes WHERE processo_id = ?", (processo_id,)
+        )]
+
+
+# NR-04 fallback por DIVISÃO CNAE (2 dígitos) — usado quando o CNAE
+# específico não está cadastrado. Reflete a moda dentro de cada divisão
+# segundo o Quadro I da NR-04 (Portaria SEPRT 8.873/2022).
+# IMPORTANTE: é um chute educado. A UI marca explicitamente como
+# "GRAU ESTIMADO" pra Eduardo saber que precisa confirmar nos casos
+# críticos.
+_NR04_FALLBACK_POR_DIVISAO = {
+    "01": 3, "02": 3, "03": 3,                       # Agro / Pesca
+    "05": 4, "06": 4, "07": 4, "08": 3, "09": 4,     # Extração
+    "10": 3, "11": 3, "12": 3, "13": 3, "14": 3,
+    "15": 3, "16": 3, "17": 3, "18": 2, "19": 3,
+    "20": 3, "21": 3, "22": 3, "23": 3, "24": 4,
+    "25": 3, "26": 3, "27": 3, "28": 3, "29": 3,
+    "30": 3, "31": 3, "32": 3, "33": 3,              # Indústria
+    "35": 3, "36": 3, "37": 3, "38": 3, "39": 3,     # Eletricidade/Água
+    "41": 3, "42": 3, "43": 3,                       # Construção
+    "45": 3, "46": 2, "47": 2,                       # Comércio
+    "49": 3, "50": 3, "51": 3, "52": 2, "53": 2,     # Transporte
+    "55": 2, "56": 2,                                # Hosp / Alim.
+    "58": 1, "59": 2, "60": 2, "61": 1, "62": 1, "63": 1,  # Informação
+    "64": 1, "65": 1, "66": 1,                       # Financeiro
+    "68": 1,                                         # Imobiliário
+    "69": 1, "70": 1, "71": 2, "72": 2, "73": 1,
+    "74": 1, "75": 3,                                # Profissionais
+    "77": 2, "78": 1, "79": 1, "80": 3, "81": 3, "82": 1,
+    "84": 1,                                         # Adm. pública
+    "85": 2,                                         # Educação
+    "86": 3, "87": 3, "88": 2,                       # Saúde
+    "90": 1, "91": 1, "92": 2, "93": 2,              # Cultura / Esporte
+    "94": 1, "95": 2,                                # Organiz. / Reparação
+    "96": 2,                                         # Serviços pessoais
+    "97": 1, "99": 1,                                # Doméstico / Internac.
+}
+
+
+def buscar_risco_cnae(cnae):
+    """Busca grau NR-04 do CNAE. Se não tiver cadastrado especificamente,
+    usa fallback por DIVISÃO CNAE e marca `_inferido_por_divisao = True`.
+    Sempre retorna um dict válido (nunca None), pra UI não mostrar
+    "não cadastrado" — em vez disso mostra "GRAU ESTIMADO".
+    """
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM cnae_risco WHERE cnae = ?", (cnae,)
+        ).fetchone()
+        if r:
+            d = dict(r)
+            # Se a base só tem o texto "risco" mas não grau numérico,
+            # tenta derivar do texto pra não exibir "—"
+            if d.get("grau_risco") is None:
+                txt = (d.get("risco") or "").lower()
+                if "alto" in txt:
+                    d["grau_risco"] = 3
+                    d["_grau_inferido_texto"] = True
+                elif "médio" in txt or "medio" in txt:
+                    d["grau_risco"] = 2
+                    d["_grau_inferido_texto"] = True
+                elif "baixo" in txt:
+                    d["grau_risco"] = 1
+                    d["_grau_inferido_texto"] = True
+            return d
+
+        # Não tem cadastrado — fallback por DIVISÃO
+        if len(cnae) >= 2:
+            div = cnae[:2]
+            grau = _NR04_FALLBACK_POR_DIVISAO.get(div)
+            if grau:
+                txt = {1: "Baixo", 2: "Médio", 3: "Alto",
+                       4: "Alto"}[grau]
+                return {
+                    "cnae": cnae,
+                    "descricao": None,
+                    "risco": txt,
+                    "grau_risco": grau,
+                    "fonte": (f"NR-04 — Quadro I (Portaria SEPRT 8.873/2022). "
+                              f"Grau ESTIMADO pela divisão CNAE {div} — "
+                              f"confirme o CNAE específico no Quadro I."),
+                    "_inferido_por_divisao": True,
+                }
+        return None
+
+
+def buscar_vigilancia(cnae):
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM vigilancia_sanitaria WHERE cnae = ?", (cnae,)
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def upsert_cnae_risco(cnae, descricao, risco, observacoes=None,
+                      grau_risco=None, fonte=None):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO cnae_risco
+               (cnae, descricao, risco, grau_risco, fonte, observacoes)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(cnae) DO UPDATE SET
+                   descricao=excluded.descricao,
+                   risco=excluded.risco,
+                   grau_risco=excluded.grau_risco,
+                   fonte=excluded.fonte,
+                   observacoes=excluded.observacoes,
+                   atualizado_em=datetime('now','localtime')""",
+            (cnae, descricao, risco, grau_risco, fonte, observacoes),
+        )
+
+
+def importar_cnae_risco_em_massa(registros: list[dict]) -> dict:
+    """
+    Importa múltiplos CNAEs de uma vez (usado pela NR-04 e CGSIM 51).
+    Cada registro deve ter: {cnae_classe, descricao, risco, grau_risco, fonte}
+    ou {cnae, descricao, risco, ...}.
+    Retorna {inseridos, atualizados, total}.
+    """
+    inseridos = 0
+    atualizados = 0
+    with get_conn() as conn:
+        for r in registros:
+            cnae = r.get("cnae") or r.get("cnae_classe")
+            if not cnae:
+                continue
+            existente = conn.execute(
+                "SELECT 1 FROM cnae_risco WHERE cnae = ?", (cnae,)
+            ).fetchone()
+            conn.execute(
+                """INSERT INTO cnae_risco
+                   (cnae, descricao, risco, grau_risco, fonte)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(cnae) DO UPDATE SET
+                       descricao=excluded.descricao,
+                       risco=excluded.risco,
+                       grau_risco=excluded.grau_risco,
+                       fonte=excluded.fonte,
+                       atualizado_em=datetime('now','localtime')""",
+                (cnae, r.get("descricao"), r.get("risco"),
+                 r.get("grau_risco"), r.get("fonte")),
+            )
+            if existente:
+                atualizados += 1
+            else:
+                inseridos += 1
+    return {"inseridos": inseridos, "atualizados": atualizados,
+            "total": inseridos + atualizados}
+
+
+def upsert_vigilancia(cnae, descricao, exige_licenca, nivel=None, fonte=None,
+                      risco_sanitario=None):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO vigilancia_sanitaria
+                   (cnae, descricao, exige_licenca, nivel, fonte, risco_sanitario)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(cnae) DO UPDATE SET
+                   descricao=excluded.descricao,
+                   exige_licenca=excluded.exige_licenca,
+                   nivel=excluded.nivel,
+                   fonte=excluded.fonte,
+                   risco_sanitario=excluded.risco_sanitario,
+                   atualizado_em=datetime('now','localtime')""",
+            (cnae, descricao, int(exige_licenca), nivel, fonte, risco_sanitario),
+        )
+
+
+def excluir_vigilancia(cnae):
+    """Remove um CNAE da tabela de vigilância sanitária."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM vigilancia_sanitaria WHERE cnae = ?", (cnae,))
+
+
+def excluir_varios_vigilancia(cnaes):
+    """Remove vários CNAEs de uma vez."""
+    if not cnaes:
+        return 0
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in cnaes)
+        cur = conn.execute(
+            f"DELETE FROM vigilancia_sanitaria WHERE cnae IN ({placeholders})",
+            tuple(cnaes),
+        )
+        return cur.rowcount
+
+
+# =====================================================
+# BOMBEIROS — Classificador técnico por CNAE (IT-01)
+# =====================================================
+def buscar_bombeiros_cnae(cnae):
+    """Busca um CNAE na tabela de classificação de Bombeiros.
+
+    Aceita tanto a subclasse completa (9999-9/99) quanto a classe (99.99-9),
+    caindo para a classe se não encontrar a subclasse."""
+    if not cnae:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM bombeiros_cnae WHERE cnae = ?", (cnae,)
+        ).fetchone()
+        if r:
+            return dict(r)
+        # Fallback para classe (os primeiros 7 caracteres: 9999-9)
+        classe = cnae.split("/")[0] if "/" in cnae else cnae
+        r = conn.execute(
+            "SELECT * FROM bombeiros_cnae WHERE cnae LIKE ? LIMIT 1",
+            (f"{classe}%",),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def listar_bombeiros_cnae():
+    """Retorna todos os registros da classificação CNAE → Bombeiros."""
+    with get_conn() as conn:
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM bombeiros_cnae ORDER BY cnae"
+            )
+        ]
+
+
+def upsert_bombeiros_cnae(
+    cnae,
+    descricao=None,
+    exige_avcb=1,
+    grau_risco=None,
+    ocupacao_it01=None,
+    area_limite_m2=None,
+    observacao=None,
+    fonte="IT-01/CBPMESP",
+):
+    """Insere ou atualiza um CNAE na classificação de Bombeiros."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO bombeiros_cnae
+                   (cnae, descricao, exige_avcb, grau_risco, ocupacao_it01,
+                    area_limite_m2, observacao, fonte, atualizado_em)
+               VALUES (?,?,?,?,?,?,?,?, datetime('now','localtime'))
+               ON CONFLICT(cnae) DO UPDATE SET
+                   descricao      = excluded.descricao,
+                   exige_avcb     = excluded.exige_avcb,
+                   grau_risco     = excluded.grau_risco,
+                   ocupacao_it01  = excluded.ocupacao_it01,
+                   area_limite_m2 = excluded.area_limite_m2,
+                   observacao     = excluded.observacao,
+                   fonte          = excluded.fonte,
+                   atualizado_em  = datetime('now','localtime')""",
+            (
+                cnae,
+                descricao,
+                int(exige_avcb),
+                grau_risco,
+                ocupacao_it01,
+                area_limite_m2,
+                observacao,
+                fonte,
+            ),
+        )
+
+
+def excluir_bombeiros_cnae(cnae):
+    """Remove um CNAE da tabela de classificação de Bombeiros."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM bombeiros_cnae WHERE cnae = ?", (cnae,))
+
+
+def excluir_varios_bombeiros_cnae(cnaes):
+    """Remove vários CNAEs de Bombeiros de uma vez."""
+    if not cnaes:
+        return 0
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in cnaes)
+        cur = conn.execute(
+            f"DELETE FROM bombeiros_cnae WHERE cnae IN ({placeholders})",
+            tuple(cnaes),
+        )
+        return cur.rowcount
+
+
+def processos_atrasados(dias):
+    sql = """
+        SELECT p.*, e.razao_social,
+               CAST(julianday('now') - julianday(p.ultima_movimentacao) AS INTEGER) AS dias_parado
+        FROM processos p
+        JOIN empresas e ON e.id = p.empresa_id
+        WHERE p.status NOT IN ('Deferido','Indeferido','Arquivado')
+          AND julianday('now') - julianday(p.ultima_movimentacao) >= ?
+        ORDER BY dias_parado DESC
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, (dias,))]
+
+
+def registrar_notificacao(processo_id, canal, mensagem, sucesso, erro=None):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO notificacoes (processo_id, canal, mensagem, sucesso, erro)
+               VALUES (?,?,?,?,?)""",
+            (processo_id, canal, mensagem, int(sucesso), erro),
+        )
+
+
+# =====================================================
+# ALVARÁ DE BOMBEIROS (AVCB/CLCB)
+# =====================================================
+def criar_alvara_bombeiros(empresa_id, data_vencimento, tipo=None, numero=None,
+                            data_emissao=None, arquivo_pdf=None, ocupacao=None,
+                            area_construida=None, observacoes=None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO alvaras_bombeiros
+               (empresa_id, tipo, numero, data_emissao, data_vencimento,
+                arquivo_pdf, ocupacao, area_construida, observacoes)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (empresa_id, tipo, numero, data_emissao, data_vencimento,
+             arquivo_pdf, ocupacao, area_construida, observacoes),
+        )
+        return cur.lastrowid
+
+
+def listar_alvaras_bombeiros(empresa_id=None):
+    sql = """
+        SELECT a.*, e.razao_social, e.cnpj,
+               CAST(julianday(a.data_vencimento) - julianday('now') AS INTEGER) AS dias_para_vencer
+        FROM alvaras_bombeiros a
+        JOIN empresas e ON e.id = a.empresa_id
+    """
+    params = ()
+    if empresa_id:
+        sql += " WHERE a.empresa_id = ?"
+        params = (empresa_id,)
+    sql += " ORDER BY a.data_vencimento ASC"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def alvaras_vencendo(dias=60):
+    """AVCBs que vencem nos próximos N dias (ou já vencidos)."""
+    sql = """
+        SELECT a.*, e.razao_social, e.cnpj,
+               CAST(julianday(a.data_vencimento) - julianday('now') AS INTEGER) AS dias_para_vencer
+        FROM alvaras_bombeiros a
+        JOIN empresas e ON e.id = a.empresa_id
+        WHERE julianday(a.data_vencimento) - julianday('now') <= ?
+        ORDER BY a.data_vencimento ASC
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, (dias,))]
+
+
+def excluir_alvara_bombeiros(alvara_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM alvaras_bombeiros WHERE id = ?", (alvara_id,))
+        return cur.rowcount > 0
+
+
+def marcar_alvara_alertado(alvara_id: int, janela: str) -> None:
+    """janela = '30d', '60d' ou 'vencido'."""
+    campo = {"30d": "alertado_30d", "60d": "alertado_60d",
+             "vencido": "alertado_vencido"}.get(janela)
+    if not campo:
+        return
+    with get_conn() as conn:
+        conn.execute(f"UPDATE alvaras_bombeiros SET {campo} = 1 WHERE id = ?",
+                     (alvara_id,))
+
+
+# =====================================================
+# DOCUMENTOS COM VENCIMENTO (genérico — CND, FGTS, CNDT etc.)
+# =====================================================
+TIPOS_DOCUMENTO_VENCIMENTO = [
+    "CND Federal",
+    "CND Estadual",
+    "CND Municipal",
+    "CND FGTS",
+    "CNDT (Trabalhista)",
+    "Alvará de Funcionamento",
+    "Alvará Sanitário",
+    "Licença Ambiental",
+    "Contrato Social",
+    "Procuração",
+    "Certificado Digital",
+    "Outro",
+]
+
+
+def criar_documento_vencimento(empresa_id, tipo, data_vencimento,
+                                numero=None, descricao=None,
+                                data_emissao=None, dias_alerta=45,
+                                arquivo_pdf=None, observacoes=None,
+                                status="Vigente"):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO documentos_vencimento
+               (empresa_id, tipo, numero, descricao, data_emissao,
+                data_vencimento, dias_alerta, arquivo_pdf, status, observacoes)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (empresa_id, tipo, numero, descricao, data_emissao,
+             data_vencimento, dias_alerta, arquivo_pdf, status, observacoes),
+        )
+        return cur.lastrowid
+
+
+def listar_documentos_vencimento(empresa_id=None, apenas_vigentes=True):
+    sql = """
+        SELECT d.*, e.razao_social, e.cnpj,
+               CAST(julianday(d.data_vencimento) - julianday('now') AS INTEGER)
+                   AS dias_para_vencer
+        FROM documentos_vencimento d
+        JOIN empresas e ON e.id = d.empresa_id
+    """
+    params = []
+    wheres = []
+    if empresa_id:
+        wheres.append("d.empresa_id = ?")
+        params.append(empresa_id)
+    if apenas_vigentes:
+        wheres.append("d.status = 'Vigente'")
+    if wheres:
+        sql += " WHERE " + " AND ".join(wheres)
+    sql += " ORDER BY d.data_vencimento ASC"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def documentos_proximos_vencimento(dias=None):
+    """
+    Retorna documentos cuja `dias_para_vencer <= dias_alerta` (se dias não for
+    passado) OU `dias_para_vencer <= dias` (se informado).
+    Inclui já vencidos (dias_para_vencer < 0) pra cobrar renovação atrasada.
+    """
+    if dias is None:
+        # usa o dias_alerta de cada documento
+        sql = """
+            SELECT d.*, e.razao_social, e.cnpj,
+                   CAST(julianday(d.data_vencimento) - julianday('now') AS INTEGER)
+                       AS dias_para_vencer
+            FROM documentos_vencimento d
+            JOIN empresas e ON e.id = d.empresa_id
+            WHERE d.status = 'Vigente'
+              AND julianday(d.data_vencimento) - julianday('now') <= d.dias_alerta
+            ORDER BY d.data_vencimento ASC
+        """
+        params = ()
+    else:
+        sql = """
+            SELECT d.*, e.razao_social, e.cnpj,
+                   CAST(julianday(d.data_vencimento) - julianday('now') AS INTEGER)
+                       AS dias_para_vencer
+            FROM documentos_vencimento d
+            JOIN empresas e ON e.id = d.empresa_id
+            WHERE d.status = 'Vigente'
+              AND julianday(d.data_vencimento) - julianday('now') <= ?
+            ORDER BY d.data_vencimento ASC
+        """
+        params = (dias,)
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def atualizar_documento_vencimento(doc_id, **campos):
+    """Atualiza campos arbitrários do documento (uso pra edição/renovação)."""
+    if not campos:
+        return False
+    campos["atualizado_em"] = None  # vai virar datetime('now') via trigger
+    set_sql = ", ".join(
+        f"{k} = ?" if k != "atualizado_em"
+        else "atualizado_em = datetime('now', 'localtime')"
+        for k in campos
+    )
+    values = [v for k, v in campos.items() if k != "atualizado_em"]
+    values.append(doc_id)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE documentos_vencimento SET {set_sql} WHERE id = ?",
+            values,
+        )
+        return cur.rowcount > 0
+
+
+def excluir_documento_vencimento(doc_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM documentos_vencimento WHERE id = ?", (doc_id,)
+        )
+        return cur.rowcount > 0
+
+
+def renovar_documento(doc_antigo_id, novo_data_vencimento,
+                      novo_numero=None, novo_arquivo_pdf=None,
+                      novo_data_emissao=None, observacoes=None):
+    """
+    Marca o documento antigo como 'Renovado' e cria um novo Vigente,
+    linkando o novo ao antigo via renovado_para_id.
+    """
+    with get_conn() as conn:
+        antigo = conn.execute(
+            "SELECT * FROM documentos_vencimento WHERE id = ?",
+            (doc_antigo_id,),
+        ).fetchone()
+        if not antigo:
+            return None
+        cur = conn.execute(
+            """INSERT INTO documentos_vencimento
+               (empresa_id, tipo, numero, descricao, data_emissao,
+                data_vencimento, dias_alerta, arquivo_pdf, status, observacoes)
+               VALUES (?,?,?,?,?,?,?,?,'Vigente',?)""",
+            (antigo["empresa_id"], antigo["tipo"],
+             novo_numero or antigo["numero"],
+             antigo["descricao"], novo_data_emissao,
+             novo_data_vencimento, antigo["dias_alerta"],
+             novo_arquivo_pdf, observacoes),
+        )
+        novo_id = cur.lastrowid
+        conn.execute(
+            """UPDATE documentos_vencimento
+               SET status = 'Renovado',
+                   renovado_para_id = ?,
+                   atualizado_em = datetime('now', 'localtime')
+               WHERE id = ?""",
+            (novo_id, doc_antigo_id),
+        )
+        return novo_id
+
+
+# =====================================================
+# PROTOCOLOS REDESIM (Viabilidade / Licenciamento)
+# =====================================================
+# Tipos válidos
+TIPO_PROTOCOLO_VIABILIDADE = "Viabilidade"
+TIPO_PROTOCOLO_LICENCIAMENTO = "Licenciamento"
+TIPOS_PROTOCOLO_REDESIM = [
+    TIPO_PROTOCOLO_VIABILIDADE,
+    TIPO_PROTOCOLO_LICENCIAMENTO,
+]
+
+# Status válidos (reais do portal Facilita-SP/REDESIM)
+STATUS_PROTOCOLO_VIABILIDADE = [
+    "Em análise",
+    "Aprovada",
+    "Indeferida",
+    "Cancelada",
+    "Inativa",
+]
+STATUS_PROTOCOLO_LICENCIAMENTO = [
+    "Pendente de avaliação do risco",
+    "Em análise",
+    "Concluída",
+    "Indeferida",
+    "Cancelada",
+    "Inativa",
+]
+
+# Status que disparam alerta imediato (problema)
+STATUS_PROTOCOLO_PROBLEMA = {"Indeferida", "Cancelada", "Inativa"}
+# Status finalizados (pro verde do semáforo / timeline)
+STATUS_PROTOCOLO_OK = {"Aprovada", "Concluída"}
+# Status em andamento (amarelo)
+STATUS_PROTOCOLO_EM_ANDAMENTO = {"Em análise", "Pendente de avaliação do risco"}
+
+
+def buscar_empresa_por_cnpj(cnpj: str) -> dict | None:
+    """Retorna a empresa com CNPJ informado (ou None).
+    Normaliza removendo pontuação antes de buscar.
+    """
+    if not cnpj:
+        return None
+    # Normalizar: tira tudo que não é dígito
+    digitos = "".join(c for c in str(cnpj) if c.isdigit())
+    if not digitos:
+        return None
+    with get_conn() as conn:
+        # Tenta match exato primeiro
+        r = conn.execute(
+            "SELECT * FROM empresas WHERE cnpj = ?", (cnpj,)
+        ).fetchone()
+        if r:
+            return dict(r)
+        # Match normalizado (remove pontuação armazenada também)
+        r = conn.execute(
+            """SELECT * FROM empresas
+               WHERE REPLACE(REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-',''),' ','') = ?""",
+            (digitos,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def criar_protocolo_redesim(
+    empresa_id: int,
+    tipo: str,
+    numero_protocolo: str,
+    *,
+    numero_solicitacao: str | None = None,
+    data_solicitacao: str | None = None,
+    evento: str | None = None,
+    orgao_registro: str | None = None,
+    status: str = "Em análise",
+    observacoes: str | None = None,
+) -> int:
+    """Cria um protocolo vinculado a uma empresa. Retorna o ID gerado."""
+    if tipo not in TIPOS_PROTOCOLO_REDESIM:
+        raise ValueError(f"Tipo inválido: {tipo}. Use {TIPOS_PROTOCOLO_REDESIM}")
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO protocolos_redesim
+               (empresa_id, tipo, numero_protocolo, numero_solicitacao,
+                data_solicitacao, evento, orgao_registro, status, observacoes)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (empresa_id, tipo, numero_protocolo, numero_solicitacao,
+             data_solicitacao, evento, orgao_registro, status, observacoes),
+        )
+        return cur.lastrowid
+
+
+def listar_protocolos_empresa(empresa_id: int) -> list[dict]:
+    """Retorna todos os protocolos REDESIM de uma empresa,
+    ordenados do mais recente para o mais antigo (pela data_solicitacao)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM protocolos_redesim
+               WHERE empresa_id = ?
+               ORDER BY
+                 COALESCE(data_solicitacao, criado_em) DESC,
+                 id DESC""",
+            (empresa_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def listar_todos_protocolos(apenas_problematicos: bool = False) -> list[dict]:
+    """Retorna todos os protocolos de todas as empresas (para painel geral)."""
+    sql = """
+        SELECT p.*, e.razao_social, e.cnpj
+        FROM protocolos_redesim p
+        JOIN empresas e ON e.id = p.empresa_id
+    """
+    params = ()
+    if apenas_problematicos:
+        placeholders = ",".join("?" for _ in STATUS_PROTOCOLO_PROBLEMA)
+        sql += f" WHERE p.status IN ({placeholders})"
+        params = tuple(STATUS_PROTOCOLO_PROBLEMA)
+    sql += " ORDER BY COALESCE(p.data_solicitacao, p.criado_em) DESC, p.id DESC"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def buscar_protocolo_redesim(protocolo_id: int) -> dict | None:
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT p.*, e.razao_social, e.cnpj
+               FROM protocolos_redesim p
+               JOIN empresas e ON e.id = p.empresa_id
+               WHERE p.id = ?""",
+            (protocolo_id,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def atualizar_status_protocolo(
+    protocolo_id: int,
+    novo_status: str,
+    observacoes: str | None = None,
+) -> dict | None:
+    """Atualiza o status de um protocolo. Retorna o dict do protocolo
+    atualizado (ou None se não existir). O app deve disparar alerta
+    quando o novo_status estiver em STATUS_PROTOCOLO_PROBLEMA."""
+    with get_conn() as conn:
+        atual = conn.execute(
+            "SELECT * FROM protocolos_redesim WHERE id = ?",
+            (protocolo_id,),
+        ).fetchone()
+        if not atual:
+            return None
+        if observacoes is not None:
+            conn.execute(
+                """UPDATE protocolos_redesim
+                   SET status = ?, observacoes = ?,
+                       atualizado_em = datetime('now','localtime')
+                   WHERE id = ?""",
+                (novo_status, observacoes, protocolo_id),
+            )
+        else:
+            conn.execute(
+                """UPDATE protocolos_redesim
+                   SET status = ?,
+                       atualizado_em = datetime('now','localtime')
+                   WHERE id = ?""",
+                (novo_status, protocolo_id),
+            )
+        r = conn.execute(
+            """SELECT p.*, e.razao_social, e.cnpj
+               FROM protocolos_redesim p
+               JOIN empresas e ON e.id = p.empresa_id
+               WHERE p.id = ?""",
+            (protocolo_id,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def protocolos_problematicos_ativos(
+    empresa_id: int,
+    tipo: str | None = None,
+) -> list[dict]:
+    """Retorna protocolos com status Indeferida/Cancelada/Inativa que ainda
+    NÃO foram substituídos (substituido_por_id IS NULL) — candidatos a
+    serem substituídos quando um novo protocolo for criado.
+
+    Se `tipo` for informado, filtra só os daquele tipo.
+    """
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in STATUS_PROTOCOLO_PROBLEMA)
+        params: tuple = (empresa_id, *tuple(STATUS_PROTOCOLO_PROBLEMA))
+        sql = (
+            "SELECT * FROM protocolos_redesim "
+            f"WHERE empresa_id = ? AND status IN ({placeholders}) "
+            "AND substituido_por_id IS NULL"
+        )
+        if tipo:
+            sql += " AND tipo = ?"
+            params = params + (tipo,)
+        sql += " ORDER BY COALESCE(data_solicitacao, criado_em) DESC, id DESC"
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def substituir_protocolos(
+    empresa_id: int,
+    substituto_id: int,
+    *,
+    tipo: str | None = None,
+) -> int:
+    """Marca todos os protocolos problemáticos ainda não substituídos da
+    empresa como substituídos pelo `substituto_id`. Retorna o nº de linhas
+    afetadas.
+
+    Use após criar um novo protocolo, quando o Eduardo confirma que ele
+    substitui os anteriores com status Indeferida/Cancelada/Inativa.
+    """
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in STATUS_PROTOCOLO_PROBLEMA)
+        params: tuple = (
+            substituto_id, empresa_id, *tuple(STATUS_PROTOCOLO_PROBLEMA),
+            substituto_id,
+        )
+        sql = (
+            "UPDATE protocolos_redesim "
+            "SET substituido_por_id = ?, "
+            "    atualizado_em = datetime('now','localtime') "
+            f"WHERE empresa_id = ? AND status IN ({placeholders}) "
+            "AND substituido_por_id IS NULL AND id != ?"
+        )
+        if tipo:
+            sql += " AND tipo = ?"
+            params = params + (tipo,)
+        cur = conn.execute(sql, params)
+        return cur.rowcount
+
+
+def excluir_protocolo_redesim(protocolo_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM protocolos_redesim WHERE id = ?",
+            (protocolo_id,),
+        )
+        return cur.rowcount > 0
+
+
+def atualizar_empresa(empresa_id: int, **campos) -> bool:
+    """Atualiza campos arbitrários de uma empresa (razao_social, endereco, etc.)."""
+    permitidos = {"razao_social", "cnpj", "endereco", "municipio", "uf", "responsavel"}
+    campos = {k: v for k, v in campos.items() if k in permitidos and v is not None}
+    if not campos:
+        return False
+    set_sql = ", ".join(f"{k} = ?" for k in campos)
+    values = list(campos.values())
+    values.append(empresa_id)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE empresas SET {set_sql} WHERE id = ?",
+            values,
+        )
+        return cur.rowcount > 0
+
+
+# -----------------------------------------------------------
+# Normas / bases oficiais (NR-04, CVS-SP, IT-01, CGSIM, CONCLA)
+# -----------------------------------------------------------
+NORMAS_META = {
+    "nr04": {
+        "titulo": "NR-04 — Matriz de Risco CNAE",
+        "orgao": "Ministério do Trabalho / SEPRT",
+        "url": "https://www.gov.br/trabalho-e-emprego/pt-br/assuntos/inspecao-do-trabalho/seguranca-e-saude-no-trabalho/normas-regulamentadoras/nr-04-atualizada-2022.pdf",
+        "descricao": "Quadro I da NR-04 — enquadra CNAEs em grau de risco 1 a 4 (Baixo/Médio/Alto).",
+    },
+    "cvs_sp": {
+        "titulo": "Vigilância Sanitária — CVS-SP",
+        "orgao": "Centro de Vigilância Sanitária SP",
+        "url": "https://www.cvs.saude.sp.gov.br/zip/portaria-cvs-01-de-10-01-2024-atualizada.pdf",
+        "descricao": "Portaria CVS-SP 1/2024 — CNAEs que exigem licença sanitária.",
+    },
+    "it01_cbpmesp": {
+        "titulo": "IT-01 — Bombeiros SP (CBPMESP)",
+        "orgao": "Corpo de Bombeiros PMESP",
+        "url": "https://www.policiamilitar.sp.gov.br/ccb/",
+        "descricao": "Instrução Técnica 01 — classificação das ocupações e exigência de AVCB/CLCB.",
+    },
+    "cgsim": {
+        "titulo": "CGSIM — Classificação de Risco",
+        "orgao": "Comitê para Gestão da Rede Nacional (REDESIM)",
+        "url": "https://www.gov.br/empresas-e-negocios/pt-br/redesim/legislacao/comite-para-gestao-da-rede-nacional-para-a-simplificacao-do-registro-e-da-legalizacao-de-empresas-e-negocios-cgsim",
+        "descricao": "Resoluções CGSIM 59/2020 e 61/2020 — classificação de risco para viabilidade.",
+    },
+    "concla": {
+        "titulo": "CONCLA / CNAE — Base Oficial IBGE",
+        "orgao": "IBGE / CONCLA",
+        "url": "https://concla.ibge.gov.br/busca-online-cnae.html",
+        "descricao": "Lista mestra de CNAEs (subclasses). Atualizar quando o IBGE lançar nova versão.",
+    },
+}
+
+
+def registrar_atualizacao_norma(base, *, orgao=None, versao=None,
+                                arquivo_origem=None, hash_arquivo=None,
+                                registros=None, observacoes=None,
+                                atualizado_por=None):
+    """Insere um registro de atualização de norma."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO normas_atualizacao
+               (base, orgao, versao, arquivo_origem, hash_arquivo,
+                registros, observacoes, atualizado_por)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (base, orgao, versao, arquivo_origem, hash_arquivo,
+             registros, observacoes, atualizado_por),
+        )
+        return cur.lastrowid
+
+
+def ultima_atualizacao(base: str):
+    """Retorna a última atualização registrada para uma base (ou None)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT * FROM normas_atualizacao
+               WHERE base = ?
+               ORDER BY datetime(criado_em) DESC, id DESC
+               LIMIT 1""",
+            (base,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def historico_atualizacoes(base: str | None = None, limite: int = 50):
+    """Retorna histórico de atualizações (opcionalmente filtrado por base)."""
+    with get_conn() as conn:
+        if base:
+            rows = conn.execute(
+                """SELECT * FROM normas_atualizacao
+                   WHERE base = ?
+                   ORDER BY datetime(criado_em) DESC, id DESC
+                   LIMIT ?""",
+                (base, limite),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM normas_atualizacao
+                   ORDER BY datetime(criado_em) DESC, id DESC
+                   LIMIT ?""",
+                (limite,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def dias_desde_atualizacao(base: str) -> int | None:
+    """Quantos dias desde a última atualização da base, ou None se nunca."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT CAST(julianday('now', 'localtime')
+                        - julianday(criado_em) AS INTEGER) AS dias
+               FROM normas_atualizacao
+               WHERE base = ?
+               ORDER BY datetime(criado_em) DESC, id DESC
+               LIMIT 1""",
+            (base,),
+        ).fetchone()
+        return int(row["dias"]) if row and row["dias"] is not None else None
+
+
+def status_normas(limite_dias: int = 180):
+    """
+    Retorna status consolidado de cada base conhecida:
+    {base, titulo, orgao, ultima_data, dias, versao, status}
+    status ∈ {'nunca', 'ok', 'atencao', 'atrasado'}
+    """
+    resultado = []
+    for base, meta in NORMAS_META.items():
+        ult = ultima_atualizacao(base)
+        dias = dias_desde_atualizacao(base)
+        if ult is None:
+            status = "nunca"
+        elif dias is None:
+            status = "ok"
+        elif dias > limite_dias:
+            status = "atrasado"
+        elif dias > limite_dias * 0.66:
+            status = "atencao"
+        else:
+            status = "ok"
+        resultado.append({
+            "base": base,
+            "titulo": meta["titulo"],
+            "orgao": meta["orgao"],
+            "url": meta["url"],
+            "descricao": meta["descricao"],
+            "ultima_data": ult["criado_em"] if ult else None,
+            "dias": dias,
+            "versao": ult["versao"] if ult else None,
+            "arquivo_origem": ult["arquivo_origem"] if ult else None,
+            "registros": ult["registros"] if ult else None,
+            "atualizado_por": ult["atualizado_por"] if ult else None,
+            "status": status,
+        })
+    return resultado
+
+
+# -----------------------------------------------------------
+# CONCLA — Tabela mestra de CNAEs (IBGE)
+# -----------------------------------------------------------
+def importar_cnae_concla(registros: list[dict]) -> dict:
+    """
+    Importa a estrutura detalhada da CNAE (IBGE). Cada registro:
+    {codigo, nivel, denominacao, secao, divisao, grupo, classe}
+
+    Faz upsert (INSERT OR REPLACE). Retorna {inseridos, atualizados, total}.
+    """
+    inseridos = 0
+    atualizados = 0
+    with get_conn() as conn:
+        for r in registros:
+            codigo = r.get("codigo")
+            if not codigo:
+                continue
+            ja_existe = conn.execute(
+                "SELECT 1 FROM cnae_concla WHERE codigo = ?", (codigo,)
+            ).fetchone()
+            conn.execute(
+                """INSERT OR REPLACE INTO cnae_concla
+                   (codigo, nivel, denominacao, secao, divisao, grupo, classe,
+                    atualizado_em)
+                   VALUES (?,?,?,?,?,?,?, datetime('now','localtime'))""",
+                (
+                    codigo,
+                    r.get("nivel"),
+                    r.get("denominacao"),
+                    r.get("secao"),
+                    r.get("divisao"),
+                    r.get("grupo"),
+                    r.get("classe"),
+                ),
+            )
+            if ja_existe:
+                atualizados += 1
+            else:
+                inseridos += 1
+    return {"inseridos": inseridos, "atualizados": atualizados,
+            "total": inseridos + atualizados}
+
+
+def buscar_cnae_concla(codigo: str) -> dict | None:
+    """Retorna o registro CONCLA (qualquer nível) ou None."""
+    if not codigo:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM cnae_concla WHERE codigo = ?",
+            (codigo.strip(),),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def contar_cnae_concla() -> dict:
+    """Retorna contagem por nível (secao, divisao, grupo, classe, subclasse)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT nivel, COUNT(*) AS qtd FROM cnae_concla GROUP BY nivel"
+        ).fetchall()
+        return {r["nivel"]: r["qtd"] for r in rows}
+
+
+# -----------------------------------------------------------
+# CGSIM — CNAEs com classificação de risco
+# -----------------------------------------------------------
+def importar_cgsim_cnae(registros: list[dict]) -> dict:
+    """
+    Importa tabela CGSIM. Cada registro:
+    {codigo, denominacao, nivel_risco, orgao, observacoes, fonte}
+    """
+    inseridos = 0
+    atualizados = 0
+    with get_conn() as conn:
+        for r in registros:
+            codigo = r.get("codigo")
+            if not codigo:
+                continue
+            ja_existe = conn.execute(
+                "SELECT 1 FROM cgsim_cnae WHERE codigo = ?", (codigo,)
+            ).fetchone()
+            conn.execute(
+                """INSERT OR REPLACE INTO cgsim_cnae
+                   (codigo, denominacao, nivel_risco, orgao, observacoes,
+                    fonte, atualizado_em)
+                   VALUES (?,?,?,?,?,?, datetime('now','localtime'))""",
+                (
+                    codigo,
+                    r.get("denominacao"),
+                    r.get("nivel_risco"),
+                    r.get("orgao"),
+                    r.get("observacoes"),
+                    r.get("fonte", "CGSIM 59/2020"),
+                ),
+            )
+            if ja_existe:
+                atualizados += 1
+            else:
+                inseridos += 1
+    return {"inseridos": inseridos, "atualizados": atualizados,
+            "total": inseridos + atualizados}
+
+
+def buscar_cgsim_cnae(codigo: str) -> dict | None:
+    if not codigo:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM cgsim_cnae WHERE codigo = ?",
+            (codigo.strip(),),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def contar_cgsim_cnae() -> int:
+    with get_conn() as conn:
+        r = conn.execute("SELECT COUNT(*) AS n FROM cgsim_cnae").fetchone()
+        return int(r["n"]) if r else 0
+
+
+# ---------------------------------------------------------------------------
+# GESTTA — tarefas atrasadas importadas do relatório do escritório
+# ---------------------------------------------------------------------------
+import re as _re
+import unicodedata as _ud
+
+RISCOS_GESTTA = ["ALTO", "MÉDIO", "BAIXO"]
+
+_SUFIXOS_EMPRESARIAIS = (
+    "LTDA", "LTDA.", "ME", "M.E.", "EPP", "E.P.P.",
+    "EIRELI", "S.A.", "SA", "S/A", "CIA", "LIMITADA",
+)
+
+
+def normalizar_nome_cliente(nome: str) -> str:
+    """Normaliza o nome do cliente para matching:
+    - uppercase
+    - remove acentos
+    - remove pontuação
+    - remove sufixos empresariais (LTDA, ME, EPP, EIRELI, SA, CIA)
+    - colapsa espaços
+    """
+    if not nome:
+        return ""
+    s = _ud.normalize("NFKD", str(nome)).encode("ASCII", "ignore").decode("ASCII").upper()
+    # remove pontuação
+    s = _re.sub(r"[^A-Z0-9 ]", " ", s)
+    # remove sufixos como palavra isolada
+    tokens = [t for t in s.split() if t not in _SUFIXOS_EMPRESARIAIS]
+    s = " ".join(tokens)
+    # remove "- ME" "- EPP" remanescentes
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def classificar_risco_tarefa_gestta(
+    tarefa_nome: str, overdue: bool = False,
+) -> tuple[str, str]:
+    """Retorna (risco, motivo) para uma tarefa GESTTA.
+
+    Quando `overdue=True`, eleva o risco em um nível
+    (BAIXO→MÉDIO, MÉDIO→ALTO) e adiciona prefixo "🔴 ATRASADA — ".
+    """
+    t = (tarefa_nome or "").upper()
+    if "RENOVA" in t and ("LICENC" in t or "FUNCIONAMENTO" in t):
+        risco, motivo = "ALTO", "Renovação de licença — risco de operar sem licença vigente"
+    elif "ALVAR" in t and "SANIT" in t:
+        risco, motivo = "ALTO", "Alvará sanitário — fiscalização VISA / multa"
+    elif "LICEN" in t and ("FUNCION" in t or "AMBIENT" in t or "CETESB" in t):
+        risco, motivo = "ALTO", "Licença operacional — risco de autuação"
+    elif "ABERTURA" in t:
+        risco, motivo = "MÉDIO", "Empresa não operacional — trava faturamento"
+    elif "ALTERAC" in t or "ALTERAÇ" in t:
+        risco, motivo = "MÉDIO", "Alteração — cadastros desatualizados"
+    elif "BAIXA" in t:
+        risco, motivo = "MÉDIO", "Baixa de empresa — pendência cadastral"
+    elif "INSCRI" in t and ("MUNIC" in t or "ESTAD" in t or "FEDER" in t or "CCM" in t):
+        risco, motivo = "MÉDIO", "Inscrição — pendência fiscal/cadastral"
+    elif any(c in t for c in ["CRMV","CRM","CREA","CRP","CRO","CRC","CRF","CRN","CRQ",
+                                "COREN","CREFITO","CREFSP","CREF","CRBM","CRBio","CAU",
+                                "CORECON","OAB","ART","RRT"]):
+        risco, motivo = "MÉDIO", "Conselho profissional / RT — registro pendente"
+    else:
+        risco, motivo = "BAIXO", "Revisar manualmente"
+
+    # Eleva risco se atrasada
+    if overdue:
+        prefixo = "🔴 ATRASADA — "
+        if risco == "BAIXO":
+            return ("MÉDIO", prefixo + motivo)
+        if risco == "MÉDIO":
+            return ("ALTO", prefixo + motivo)
+        return ("ALTO", prefixo + motivo)
+    return (risco, motivo)
+
+
+def match_empresa_por_nome(nome_cliente: str) -> dict | None:
+    """Procura empresa no banco pelo nome do cliente GESTTA (match por
+    razao_social normalizada). Retorna dict da empresa ou None.
+    """
+    alvo = normalizar_nome_cliente(nome_cliente)
+    if not alvo:
+        return None
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM empresas").fetchall()
+    for r in rows:
+        if normalizar_nome_cliente(r["razao_social"]) == alvo:
+            return dict(r)
+    # match parcial — alvo contido na razao social (apenas se alvo > 5 chars)
+    if len(alvo) > 5:
+        for r in rows:
+            rs = normalizar_nome_cliente(r["razao_social"])
+            if rs and (alvo in rs or rs in alvo):
+                return dict(r)
+    return None
+
+
+def importar_tarefas_gestta(
+    registros: list[dict],
+    *,
+    origem_arquivo: str | None = None,
+    substituir_existentes: bool = True,
+) -> dict:
+    """Importa uma leva de tarefas GESTTA.
+
+    Cada registro deve ter pelo menos `tarefa_nome` e `cliente_nome`.
+    Se `substituir_existentes` e já houver uma tarefa (tarefa_nome +
+    cliente_norm + responsavel) NÃO resolvida, atualiza em vez de duplicar.
+
+    Retorna contadores {'inseridos': n, 'atualizados': n, 'matched': n}.
+    """
+    inseridos = atualizados = matched = 0
+    with get_conn() as conn:
+        for reg in registros:
+            tarefa_nome = (reg.get("tarefa_nome") or "").strip()
+            cliente_nome = (reg.get("cliente_nome") or "").strip()
+            if not tarefa_nome or not cliente_nome:
+                continue
+            cliente_norm = normalizar_nome_cliente(cliente_nome)
+            responsavel = (reg.get("responsavel") or "").strip() or None
+            atrasada = (reg.get("atrasada") or "").strip() or None
+            status_gestta = (reg.get("status_gestta") or "").strip() or None
+            departamento = (reg.get("departamento") or "").strip() or None
+            risco, motivo = classificar_risco_tarefa_gestta(tarefa_nome)
+            # tentar matching automático
+            emp = match_empresa_por_nome(cliente_nome)
+            empresa_id = emp["id"] if emp else None
+            if empresa_id:
+                matched += 1
+
+            existente = None
+            if substituir_existentes:
+                existente = conn.execute(
+                    """SELECT id FROM tarefas_gestta
+                       WHERE tarefa_nome = ? AND cliente_norm = ?
+                         AND IFNULL(responsavel, '') = IFNULL(?, '')
+                         AND resolvida = 0
+                       LIMIT 1""",
+                    (tarefa_nome, cliente_norm, responsavel),
+                ).fetchone()
+
+            if existente:
+                conn.execute(
+                    """UPDATE tarefas_gestta SET
+                         cliente_nome=?, atrasada=?, status_gestta=?,
+                         departamento=?, risco=?, motivo_risco=?,
+                         empresa_id = COALESCE(empresa_id, ?),
+                         origem_arquivo = COALESCE(?, origem_arquivo),
+                         atualizado_em = datetime('now', 'localtime')
+                       WHERE id = ?""",
+                    (cliente_nome, atrasada, status_gestta, departamento,
+                     risco, motivo, empresa_id, origem_arquivo, existente["id"]),
+                )
+                atualizados += 1
+            else:
+                conn.execute(
+                    """INSERT INTO tarefas_gestta (
+                         tarefa_nome, cliente_nome, cliente_norm, responsavel,
+                         atrasada, status_gestta, departamento,
+                         risco, motivo_risco, empresa_id, origem_arquivo
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (tarefa_nome, cliente_nome, cliente_norm, responsavel,
+                     atrasada, status_gestta, departamento,
+                     risco, motivo, empresa_id, origem_arquivo),
+                )
+                inseridos += 1
+        conn.commit()
+    return {"inseridos": inseridos, "atualizados": atualizados, "matched": matched}
+
+
+def upsert_tarefas_gestta_api(tarefas_api: list[dict]) -> dict:
+    """Recebe a lista crua vinda de `GesttaClient.iter_tarefas()` (cada item é
+    um dict com `_id`, `name`, `customer{}`, `owner{}`, `due_date`, `status`,
+    `overdue`, `total_step`, `done_step`, etc.) e faz UPSERT na tabela
+    `tarefas_gestta` usando `gestta_id` como chave única.
+
+    Retorna {'inseridas', 'atualizadas', 'matched_empresa'}.
+    """
+    inseridas = atualizadas = matched = 0
+    with get_conn() as conn:
+        for t in tarefas_api:
+            gestta_id = t.get("_id")
+            if not gestta_id:
+                continue
+            tarefa_nome = (t.get("name") or "").strip()
+            cust = t.get("customer") or {}
+            owner = t.get("owner") or {}
+            cliente_nome = (cust.get("name") or "").strip()
+            cliente_norm = normalizar_nome_cliente(cliente_nome)
+            responsavel = (owner.get("name") or "").strip() or None
+            status_gestta = (t.get("status") or "").strip() or None
+            is_overdue = bool(t.get("overdue"))
+            atrasada = "Sim" if is_overdue else "Não"
+            risco, motivo = classificar_risco_tarefa_gestta(
+                tarefa_nome, overdue=is_overdue,
+            )
+            emp = match_empresa_por_nome(cliente_nome) if cliente_nome else None
+            empresa_id = emp["id"] if emp else None
+            if empresa_id:
+                matched += 1
+
+            existente = conn.execute(
+                "SELECT id FROM tarefas_gestta WHERE gestta_id = ?",
+                (gestta_id,),
+            ).fetchone()
+
+            campos = {
+                "gestta_id": gestta_id,
+                "gestta_customer_id": cust.get("_id"),
+                "gestta_owner_id": owner.get("_id"),
+                "tarefa_nome": tarefa_nome,
+                "cliente_nome": cliente_nome,
+                "cliente_norm": cliente_norm,
+                "responsavel": responsavel,
+                "atrasada": atrasada,
+                "status_gestta": status_gestta,
+                "departamento": None,  # API não retorna nesse endpoint
+                "subtype": t.get("subtype"),
+                "due_date": t.get("due_date"),
+                "competence_date": t.get("competence_date"),
+                "created_at": t.get("created_at"),
+                "legal_date": t.get("legal_date"),
+                "total_step": t.get("total_step"),
+                "done_step": t.get("done_step"),
+                "overdue": 1 if t.get("overdue") else 0,
+                "fine": 1 if t.get("fine") else 0,
+                "done_overdue": 1 if t.get("done_overdue") else 0,
+                "done_fine": 1 if t.get("done_fine") else 0,
+                "risco": risco,
+                "motivo_risco": motivo,
+                "origem_arquivo": "API GESTTA",
+            }
+
+            if existente:
+                # mantém empresa_id/protocolo_id/resolvida que o usuário possa ter setado
+                set_clause = ", ".join(f"{k} = ?" for k in campos)
+                params = list(campos.values()) + [existente["id"]]
+                conn.execute(
+                    f"UPDATE tarefas_gestta SET {set_clause}, "
+                    f"atualizado_em = datetime('now','localtime') WHERE id = ?",
+                    params,
+                )
+                # Tenta vincular empresa se ainda não tem
+                if empresa_id:
+                    conn.execute(
+                        "UPDATE tarefas_gestta SET empresa_id = COALESCE(empresa_id, ?) WHERE id = ?",
+                        (empresa_id, existente["id"]),
+                    )
+                atualizadas += 1
+            else:
+                campos["empresa_id"] = empresa_id
+                cols = ", ".join(campos.keys())
+                placeholders = ", ".join("?" for _ in campos)
+                conn.execute(
+                    f"INSERT INTO tarefas_gestta ({cols}) VALUES ({placeholders})",
+                    list(campos.values()),
+                )
+                inseridas += 1
+        conn.commit()
+    return {
+        "inseridas": inseridas,
+        "atualizadas": atualizadas,
+        "matched_empresa": matched,
+    }
+
+
+def listar_tarefas_gestta(
+    *,
+    apenas_pendentes: bool = True,
+    risco: str | None = None,
+    responsavel: str | None = None,
+    somente_sem_empresa: bool = False,
+    somente_sem_protocolo: bool = False,
+) -> list[dict]:
+    """Lista tarefas GESTTA com filtros opcionais."""
+    sql = """
+        SELECT t.*,
+               e.razao_social AS empresa_razao_social,
+               e.cnpj AS empresa_cnpj,
+               pr.numero_protocolo AS protocolo_numero,
+               pr.status AS protocolo_status
+          FROM tarefas_gestta t
+          LEFT JOIN empresas e ON e.id = t.empresa_id
+          LEFT JOIN protocolos_redesim pr ON pr.id = t.protocolo_id
+         WHERE 1=1
+    """
+    params: list = []
+    if apenas_pendentes:
+        sql += " AND t.resolvida = 0"
+    if risco:
+        sql += " AND t.risco = ?"
+        params.append(risco)
+    if responsavel:
+        sql += " AND t.responsavel = ?"
+        params.append(responsavel)
+    if somente_sem_empresa:
+        sql += " AND t.empresa_id IS NULL"
+    if somente_sem_protocolo:
+        sql += " AND t.protocolo_id IS NULL"
+    sql += """
+        ORDER BY CASE t.risco
+                   WHEN 'ALTO' THEN 0
+                   WHEN 'MÉDIO' THEN 1
+                   WHEN 'BAIXO' THEN 2
+                   ELSE 3
+                 END,
+                 t.responsavel,
+                 t.cliente_nome
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def atualizar_tarefa_gestta(tarefa_id: int, **campos) -> bool:
+    """Atualiza campos arbitrários de uma tarefa GESTTA.
+    Campos permitidos: empresa_id, protocolo_id, resolvida, risco,
+    motivo_risco, responsavel, status_gestta, observacoes (não existe — ignora).
+    """
+    permitidos = {
+        "empresa_id", "protocolo_id", "resolvida",
+        "risco", "motivo_risco", "responsavel", "status_gestta",
+        "atrasada", "departamento",
+    }
+    sets = {k: v for k, v in campos.items() if k in permitidos}
+    if not sets:
+        return False
+    sql = ", ".join(f"{k} = ?" for k in sets)
+    params = list(sets.values()) + [tarefa_id]
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE tarefas_gestta SET {sql}, atualizado_em = datetime('now','localtime') WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def marcar_tarefa_resolvida(tarefa_id: int, resolvida: bool = True) -> bool:
+    return atualizar_tarefa_gestta(tarefa_id, resolvida=1 if resolvida else 0)
+
+
+def excluir_tarefa_gestta(tarefa_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM tarefas_gestta WHERE id = ?", (tarefa_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def estatisticas_tarefas_gestta() -> dict:
+    """Retorna estatísticas agregadas para o painel."""
+    with get_conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM tarefas_gestta WHERE resolvida = 0"
+        ).fetchone()["n"]
+        resolvidas = conn.execute(
+            "SELECT COUNT(*) AS n FROM tarefas_gestta WHERE resolvida = 1"
+        ).fetchone()["n"]
+        por_risco = {
+            r["risco"]: r["n"] for r in conn.execute(
+                """SELECT risco, COUNT(*) AS n FROM tarefas_gestta
+                   WHERE resolvida = 0 GROUP BY risco"""
+            ).fetchall()
+        }
+        por_resp = {
+            (r["responsavel"] or "—"): r["n"] for r in conn.execute(
+                """SELECT responsavel, COUNT(*) AS n FROM tarefas_gestta
+                   WHERE resolvida = 0 GROUP BY responsavel"""
+            ).fetchall()
+        }
+        sem_empresa = conn.execute(
+            """SELECT COUNT(*) AS n FROM tarefas_gestta
+               WHERE resolvida = 0 AND empresa_id IS NULL"""
+        ).fetchone()["n"]
+        sem_protocolo = conn.execute(
+            """SELECT COUNT(*) AS n FROM tarefas_gestta
+               WHERE resolvida = 0 AND protocolo_id IS NULL"""
+        ).fetchone()["n"]
+    return {
+        "total_pendentes": total,
+        "total_resolvidas": resolvidas,
+        "por_risco": por_risco,
+        "por_responsavel": por_resp,
+        "sem_empresa": sem_empresa,
+        "sem_protocolo": sem_protocolo,
+    }
+
+
+def listar_responsaveis_gestta() -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT responsavel FROM tarefas_gestta
+               WHERE responsavel IS NOT NULL AND responsavel <> ''
+               ORDER BY responsavel"""
+        ).fetchall()
+    return [r["responsavel"] for r in rows]
+
+
+def buscar_tarefa_gestta(tarefa_id: int) -> dict | None:
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM tarefas_gestta WHERE id = ?", (tarefa_id,)
+        ).fetchone()
+        return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
+# Anotações locais em tarefas GESTTA — histórico permanente
+# ---------------------------------------------------------------------------
+def adicionar_anotacao_local_gestta(
+    gestta_id: str, texto: str,
+    *, tipo: str = "NOTA", usuario: str | None = None,
+) -> int:
+    """Adiciona uma anotação no histórico LOCAL (não envia pro GESTTA)."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO gestta_anotacao_local
+                 (gestta_id, tipo, texto, usuario, replicado)
+               VALUES (?, ?, ?, ?, 0)""",
+            (gestta_id, tipo, texto.strip(), usuario),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def marcar_anotacao_replicada(
+    anotacao_id: int, *, sucesso: bool, erro: str | None = None,
+) -> None:
+    """Marca que tentou (ou não) replicar a anotação no GESTTA."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE gestta_anotacao_local SET
+                 replicado = ?,
+                 replicado_em = CASE WHEN ? = 1 THEN datetime('now','localtime') ELSE replicado_em END,
+                 erro_replicar = ?
+               WHERE id = ?""",
+            (1 if sucesso else 0, 1 if sucesso else 0, erro, anotacao_id),
+        )
+        conn.commit()
+
+
+def listar_anotacoes_locais_gestta(gestta_id: str) -> list[dict]:
+    """Lista o histórico local de anotações de uma tarefa GESTTA."""
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            """SELECT * FROM gestta_anotacao_local
+                WHERE gestta_id = ?
+                ORDER BY id DESC""",
+            (gestta_id,),
+        ).fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Playbooks — sugestão de próximo passo por tipo de tarefa
+# ---------------------------------------------------------------------------
+PLAYBOOKS_GESTTA = {
+    "ABERTURA": {
+        "padroes": ["ABERTURA"],
+        "etapas": [
+            ("Viabilidade", "Conferir protocolo no Facilita-SP / vreredesim.sp.gov.br"),
+            ("Coletor Nacional", "Acessar redesim.gov.br → Coletor Nacional"),
+            ("Registro JUCESP", "Junta Comercial — protocolo + DARE pago"),
+            ("Inscrição Municipal", "Prefeitura — CCM/CNPJ municipal"),
+            ("Licenciamento", "Vigilância/Bombeiros/Ambiental conforme CNAE"),
+        ],
+        "primeira_acao": (
+            "Verifique se a Viabilidade já está aprovada. "
+            "Se NÃO, ligue pro cliente e entenda em que ponto travou. "
+            "Se SIM, avance pro Coletor Nacional."
+        ),
+    },
+    "ALTERACAO": {
+        "padroes": ["ALTERAC", "ALTERAÇ"],
+        "etapas": [
+            ("Identificar mudança", "Contrato social novo / alteração de endereço / inclusão CNAE"),
+            ("Viabilidade (se mudou endereço/CNAE)", "Facilita-SP"),
+            ("Coletor Nacional", "Atualização cadastral"),
+            ("Junta Comercial", "Registro da alteração"),
+            ("Comunicar municípios", "Inscrição Municipal atualizada"),
+        ],
+        "primeira_acao": (
+            "Identifique QUE alteração é. Pegue o contrato/aditivo do cliente. "
+            "Se mudou endereço ou CNAE, precisa de nova Viabilidade."
+        ),
+    },
+    "RENOVACAO_LICENCA": {
+        "padroes": ["RENOVA", "LICENC"],
+        "etapas": [
+            ("Conferir validade atual", "Documento físico ou Cevs/Sivisa"),
+            ("Pagar taxa", "Boleto Prefeitura/Estado"),
+            ("Solicitar renovação", "Sistema do município ou Sivisa"),
+            ("Acompanhar processo", "Aguardar liberação ou inspeção"),
+            ("Receber documento novo", "Anexar no sistema interno"),
+        ],
+        "primeira_acao": (
+            "Pegue a licença atual e veja a data de vencimento. "
+            "Se já venceu, urgência alta — pode estar gerando multa."
+        ),
+    },
+    "ALVARA_SANITARIO": {
+        "padroes": ["ALVAR", "SANIT", "VIGIL"],
+        "etapas": [
+            ("Conferir CEVS", "Sistema Sivisa - número do CEVS atual"),
+            ("Avaliar nova classificação", "CVS 13/2025 isenta atividades de baixo risco"),
+            ("Solicitar nova vistoria", "Se não isento, agendar VISA"),
+            ("Acompanhar processo", "Sistema Sivisa"),
+            ("Receber alvará", "Anexar no sistema"),
+        ],
+        "primeira_acao": (
+            "Verifique no Consultor de CNAE se o CNAE está ISENTO pela CVS 13/2025. "
+            "Se sim, basta protocolar dispensa. Se não, agendar VISA."
+        ),
+    },
+    "BAIXA": {
+        "padroes": ["BAIXA"],
+        "etapas": [
+            ("Pegar CND", "Federal, Estadual, Municipal, FGTS, CNDT"),
+            ("Distrato/Encerramento", "Documento societário"),
+            ("Receita Federal", "Baixa CNPJ via redesim.gov.br"),
+            ("Junta Comercial", "Arquivamento da extinção"),
+            ("Municípios e Estado", "Encerrar IM e IE"),
+        ],
+        "primeira_acao": (
+            "Cliente trouxe distrato? Tem CNDs em dia? "
+            "Sem CND não consegue baixar — primeiro regularize débitos."
+        ),
+    },
+    "INSCRICAO": {
+        "padroes": ["INSCRI"],
+        "etapas": [
+            ("Conferir CNPJ ativo", "Cartão CNPJ"),
+            ("Solicitar IM/CCM", "Prefeitura competente"),
+            ("Acompanhar deferimento", "Sistema do município"),
+            ("Confirmar com cliente", "Comprovante de inscrição"),
+        ],
+        "primeira_acao": (
+            "Veja se o CNPJ está ativo na Receita. Pegue o cartão CNPJ atualizado. "
+            "Cada município tem seu sistema — verifique qual é o do cliente."
+        ),
+    },
+    "DEFAULT": {
+        "padroes": [],
+        "etapas": [
+            ("Identificar pé atual", "Conversar com cliente / verificar histórico"),
+            ("Listar pendências", "Documentos faltantes / órgãos a contatar"),
+            ("Definir próximo passo", "Ação concreta com prazo"),
+        ],
+        "primeira_acao": (
+            "Tarefa genérica. Anote o que descobrir agora pra não perder o fio."
+        ),
+    },
+}
+
+
+def sugerir_proximo_passo(tarefa_nome: str) -> dict:
+    """Retorna o playbook adequado pra um nome de tarefa."""
+    nome = (tarefa_nome or "").upper()
+    for chave, pb in PLAYBOOKS_GESTTA.items():
+        if chave == "DEFAULT":
+            continue
+        for padrao in pb["padroes"]:
+            if padrao in nome:
+                return {"chave": chave, **pb}
+    return {"chave": "DEFAULT", **PLAYBOOKS_GESTTA["DEFAULT"]}
+
+
+def rematch_empresas_gestta() -> int:
+    """Re-tenta o matching empresa↔tarefa para tarefas sem empresa_id.
+    Retorna quantas foram vinculadas.
+    """
+    vinculadas = 0
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, cliente_nome FROM tarefas_gestta WHERE empresa_id IS NULL"
+        ).fetchall()
+    for r in rows:
+        emp = match_empresa_por_nome(r["cliente_nome"])
+        if emp:
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE tarefas_gestta SET empresa_id = ?, atualizado_em = datetime('now','localtime') WHERE id = ?",
+                    (emp["id"], r["id"]),
+                )
+                conn.commit()
+            vinculadas += 1
+    return vinculadas
+
+
+# ---------------------------------------------------------------------------
+# PENDÊNCIAS GERAIS — qualquer assunto que precisa de acompanhamento
+# (malha fina, retorno de órgão, follow-up com cliente, etc.)
+# ---------------------------------------------------------------------------
+STATUS_PENDENCIA = [
+    "Aberta", "Em andamento", "Aguardando terceiro",
+    "Resolvida", "Cancelada",
+]
+STATUS_PENDENCIA_FECHADA = {"Resolvida", "Cancelada"}
+PRIORIDADES_PENDENCIA = ["Alta", "Média", "Baixa"]
+TIPOS_MOVIMENTO_PENDENCIA = ["nota", "status", "contato", "retorno"]
+
+
+def criar_pendencia(
+    empresa_id: int | None,
+    assunto: str,
+    *,
+    cliente_avulso: str | None = None,
+    descricao: str | None = None,
+    prioridade: str = "Média",
+    status: str = "Aberta",
+    data_inicio: str | None = None,
+    data_limite: str | None = None,
+    dias_alerta: int = 7,
+) -> int:
+    """Cria uma pendência. Retorna o id.
+
+    `empresa_id` é opcional — se for None, deve-se informar
+    `cliente_avulso` (nome livre do cliente, ex.: pessoa física ou
+    serviço avulso sem CNPJ).
+    """
+    if prioridade not in PRIORIDADES_PENDENCIA:
+        raise ValueError(f"prioridade inválida: {prioridade}")
+    if status not in STATUS_PENDENCIA:
+        raise ValueError(f"status inválido: {status}")
+    if not empresa_id and not (cliente_avulso or "").strip():
+        raise ValueError("informe empresa_id OU cliente_avulso")
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO pendencias (
+                 empresa_id, cliente_avulso, assunto, descricao,
+                 prioridade, status,
+                 data_inicio, data_limite, dias_alerta, resolvida
+               ) VALUES (?, ?, ?, ?, ?, ?,
+                         COALESCE(?, date('now','localtime')),
+                         ?, ?, ?)""",
+            (empresa_id,
+             (cliente_avulso or "").strip() or None,
+             assunto.strip(),
+             (descricao or "").strip() or None,
+             prioridade, status,
+             data_inicio, data_limite, int(dias_alerta),
+             1 if status in STATUS_PENDENCIA_FECHADA else 0),
+        )
+        pid = cur.lastrowid
+        conn.execute(
+            """INSERT INTO pendencia_movimentos (pendencia_id, tipo, texto)
+               VALUES (?, 'status', ?)""",
+            (pid, f"Pendência aberta como {status}."),
+        )
+        conn.commit()
+    return pid
+
+
+def adicionar_movimento_pendencia(
+    pendencia_id: int,
+    texto: str,
+    *,
+    tipo: str = "nota",
+) -> int:
+    """Adiciona uma movimentação (nota/status/contato/retorno) e atualiza
+    `ultima_atualizacao` da pendência. Retorna o id do movimento."""
+    if tipo not in TIPOS_MOVIMENTO_PENDENCIA:
+        raise ValueError(f"tipo inválido: {tipo}")
+    if not (texto or "").strip():
+        raise ValueError("texto vazio")
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO pendencia_movimentos (pendencia_id, tipo, texto)
+               VALUES (?, ?, ?)""",
+            (pendencia_id, tipo, texto.strip()),
+        )
+        mid = cur.lastrowid
+        conn.execute(
+            """UPDATE pendencias
+                  SET ultima_atualizacao = datetime('now','localtime'),
+                      atualizado_em = datetime('now','localtime')
+                WHERE id = ?""",
+            (pendencia_id,),
+        )
+        conn.commit()
+    return mid
+
+
+def atualizar_status_pendencia(
+    pendencia_id: int,
+    novo_status: str,
+    *,
+    observacao: str | None = None,
+) -> bool:
+    if novo_status not in STATUS_PENDENCIA:
+        raise ValueError(f"status inválido: {novo_status}")
+    fechada = 1 if novo_status in STATUS_PENDENCIA_FECHADA else 0
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE pendencias
+                  SET status = ?, resolvida = ?,
+                      ultima_atualizacao = datetime('now','localtime'),
+                      atualizado_em = datetime('now','localtime')
+                WHERE id = ?""",
+            (novo_status, fechada, pendencia_id),
+        )
+        if cur.rowcount > 0:
+            txt = f"Status: {novo_status}"
+            if observacao:
+                txt += f" — {observacao.strip()}"
+            conn.execute(
+                """INSERT INTO pendencia_movimentos (pendencia_id, tipo, texto)
+                   VALUES (?, 'status', ?)""",
+                (pendencia_id, txt),
+            )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def resolver_pendencia(pendencia_id: int, observacao: str | None = None) -> bool:
+    return atualizar_status_pendencia(
+        pendencia_id, "Resolvida", observacao=observacao
+    )
+
+
+def excluir_pendencia(pendencia_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM pendencias WHERE id = ?", (pendencia_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def atualizar_pendencia(pendencia_id: int, **campos) -> bool:
+    """Atualiza campos arbitrários (assunto, descricao, prioridade,
+    data_limite, dias_alerta)."""
+    permitidos = {"assunto", "descricao", "prioridade",
+                  "data_limite", "dias_alerta"}
+    sets = {k: v for k, v in campos.items() if k in permitidos}
+    if not sets:
+        return False
+    if "prioridade" in sets and sets["prioridade"] not in PRIORIDADES_PENDENCIA:
+        raise ValueError(f"prioridade inválida: {sets['prioridade']}")
+    sql = ", ".join(f"{k} = ?" for k in sets)
+    params = list(sets.values()) + [pendencia_id]
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE pendencias SET {sql}, "
+            f"atualizado_em = datetime('now','localtime') WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def listar_pendencias(
+    *,
+    apenas_abertas: bool = True,
+    status: str | None = None,
+    prioridade: str | None = None,
+    empresa_id: int | None = None,
+    somente_atrasadas: bool = False,
+) -> list[dict]:
+    """Lista pendências enriquecidas com:
+    - razao_social
+    - dias_parado (julian agora - ultima_atualizacao)
+    - dias_para_prazo (julian data_limite - agora; negativo = vencido)
+    - alerta ('🟢' | '🟡' | '🔴')
+    """
+    sql = """
+        SELECT p.*,
+               COALESCE(e.razao_social, p.cliente_avulso) AS razao_social,
+               e.cnpj,
+               CASE WHEN p.empresa_id IS NULL THEN 1 ELSE 0 END AS is_avulso,
+               CAST(julianday('now') - julianday(p.ultima_atualizacao) AS INTEGER) AS dias_parado,
+               CASE WHEN p.data_limite IS NULL THEN NULL
+                    ELSE CAST(julianday(p.data_limite) - julianday('now') AS INTEGER)
+               END AS dias_para_prazo
+          FROM pendencias p
+          LEFT JOIN empresas e ON e.id = p.empresa_id
+         WHERE 1=1
+    """
+    params: list = []
+    if apenas_abertas:
+        sql += " AND p.resolvida = 0"
+    if status:
+        sql += " AND p.status = ?"
+        params.append(status)
+    if prioridade:
+        sql += " AND p.prioridade = ?"
+        params.append(prioridade)
+    if empresa_id:
+        sql += " AND p.empresa_id = ?"
+        params.append(empresa_id)
+    sql += """
+        ORDER BY CASE p.prioridade
+                   WHEN 'Alta' THEN 0
+                   WHEN 'Média' THEN 1
+                   WHEN 'Baixa' THEN 2
+                   ELSE 3
+                 END,
+                 dias_parado DESC
+    """
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    out = []
+    for r in rows:
+        atrasada = (r["dias_para_prazo"] is not None and r["dias_para_prazo"] < 0)
+        parada = r["dias_parado"] >= r["dias_alerta"]
+        if somente_atrasadas and not (atrasada or parada):
+            continue
+        if atrasada or parada:
+            r["alerta"] = "🔴" if atrasada else "🟡"
+        else:
+            r["alerta"] = "🟢"
+        out.append(r)
+    return out
+
+
+def buscar_pendencia(pendencia_id: int) -> dict | None:
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT p.*,
+                      COALESCE(e.razao_social, p.cliente_avulso) AS razao_social,
+                      e.cnpj
+                 FROM pendencias p
+                 LEFT JOIN empresas e ON e.id = p.empresa_id
+                WHERE p.id = ?""",
+            (pendencia_id,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def listar_movimentos_pendencia(pendencia_id: int) -> list[dict]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            """SELECT * FROM pendencia_movimentos
+                WHERE pendencia_id = ?
+                ORDER BY id DESC""",
+            (pendencia_id,),
+        ).fetchall()]
+
+
+def pendencias_em_alerta() -> list[dict]:
+    """Retorna pendências abertas que merecem alerta:
+    - prazo vencido (data_limite < hoje), OU
+    - paradas há mais que dias_alerta (sem movimento).
+    """
+    return listar_pendencias(apenas_abertas=True, somente_atrasadas=True)
+
+
+def estatisticas_pendencias() -> dict:
+    with get_conn() as conn:
+        total_aberta = conn.execute(
+            "SELECT COUNT(*) AS n FROM pendencias WHERE resolvida = 0"
+        ).fetchone()["n"]
+        total_resolv = conn.execute(
+            "SELECT COUNT(*) AS n FROM pendencias WHERE resolvida = 1"
+        ).fetchone()["n"]
+        por_prio = {
+            r["prioridade"]: r["n"] for r in conn.execute(
+                """SELECT prioridade, COUNT(*) AS n FROM pendencias
+                   WHERE resolvida = 0 GROUP BY prioridade"""
+            ).fetchall()
+        }
+        por_status = {
+            r["status"]: r["n"] for r in conn.execute(
+                """SELECT status, COUNT(*) AS n FROM pendencias
+                   WHERE resolvida = 0 GROUP BY status"""
+            ).fetchall()
+        }
+    return {
+        "abertas": total_aberta,
+        "resolvidas": total_resolv,
+        "por_prioridade": por_prio,
+        "por_status": por_status,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CONSULTOR DE CNAE — helpers das bases auxiliares
+# ---------------------------------------------------------------------------
+def upsert_cnae_conselho(
+    cnae: str, conselho_sigla: str, *,
+    conselho_nome: str | None = None,
+    obrigatoriedade: str = "OBRIGATORIO",
+    tipo_registro: str | None = None,  # INSCRICAO_PJ / RT_OBRIGATORIO / AMBOS
+    observacao: str | None = None,
+    fonte: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        existente = conn.execute(
+            "SELECT id FROM cnae_conselho WHERE cnae=? AND conselho_sigla=?",
+            (cnae, conselho_sigla),
+        ).fetchone()
+        if existente:
+            conn.execute(
+                """UPDATE cnae_conselho SET
+                     conselho_nome = COALESCE(?, conselho_nome),
+                     obrigatoriedade = ?,
+                     tipo_registro = COALESCE(?, tipo_registro),
+                     observacao = COALESCE(?, observacao),
+                     fonte = COALESCE(?, fonte),
+                     atualizado_em = datetime('now','localtime')
+                   WHERE id = ?""",
+                (conselho_nome, obrigatoriedade, tipo_registro,
+                 observacao, fonte, existente["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO cnae_conselho
+                     (cnae, conselho_sigla, conselho_nome, obrigatoriedade,
+                      tipo_registro, observacao, fonte)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (cnae, conselho_sigla, conselho_nome, obrigatoriedade,
+                 tipo_registro, observacao, fonte),
+            )
+        conn.commit()
+
+
+# ---- Outros registros (CTF/IBAMA, MAPA, INMETRO, etc.) ----
+def upsert_cnae_outro_registro(
+    cnae: str, orgao: str, *,
+    orgao_nome: str | None = None,
+    categoria: str | None = None,
+    obrigatoriedade: str = "OBRIGATORIO",
+    observacao: str | None = None,
+    fonte: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        existente = conn.execute(
+            "SELECT id FROM cnae_outros_registros WHERE cnae=? AND orgao=?",
+            (cnae, orgao),
+        ).fetchone()
+        if existente:
+            conn.execute(
+                """UPDATE cnae_outros_registros SET
+                     orgao_nome = COALESCE(?, orgao_nome),
+                     categoria = COALESCE(?, categoria),
+                     obrigatoriedade = ?,
+                     observacao = COALESCE(?, observacao),
+                     fonte = COALESCE(?, fonte),
+                     atualizado_em = datetime('now','localtime')
+                   WHERE id = ?""",
+                (orgao_nome, categoria, obrigatoriedade,
+                 observacao, fonte, existente["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO cnae_outros_registros
+                     (cnae, orgao, orgao_nome, categoria, obrigatoriedade,
+                      observacao, fonte)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (cnae, orgao, orgao_nome, categoria, obrigatoriedade,
+                 observacao, fonte),
+            )
+        conn.commit()
+
+
+def listar_outros_registros_cnae(cnae: str) -> list[dict]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM cnae_outros_registros WHERE cnae = ? ORDER BY orgao",
+            (cnae,),
+        ).fetchall()]
+
+
+def upsert_cnae_habilitacao_profissional(
+    cnae: str,
+    atividade_gatilho: str,
+    quem_executa: str,
+    *,
+    conselho_sigla: str | None = None,
+    nivel_risco: str = "ALTO",
+    fonte: str | None = None,
+    observacao: str | None = None,
+) -> None:
+    """Registra que CERTA atividade dentro do CNAE exige profissional
+    habilitado, mesmo que o CNAE em si não obrigue registro da PJ.
+
+    Exemplo:
+        upsert_cnae_habilitacao_profissional(
+            cnae="9602-5/02",
+            atividade_gatilho="aplicação de toxina botulínica e preenchimento",
+            quem_executa="médico (CRM); enfermeiro habilitado (COREN); "
+                         "odontólogo (CRO) em região buco-maxilo-facial; "
+                         "biomédico esteta (CRBM) com habilitação específica",
+            conselho_sigla="CRM",
+            nivel_risco="ALTO",
+            fonte="CFM Resolução 2.219/2018; Lei 12.842/2013",
+            observacao="A clínica não precisa ter inscrição PJ em conselho, "
+                       "mas o procedimento só pode ser executado por "
+                       "profissional habilitado.",
+        )
+    """
+    cnae = (cnae or "").strip()
+    with get_conn() as conn:
+        existente = conn.execute(
+            """SELECT id FROM cnae_habilitacao_profissional
+                WHERE cnae = ? AND atividade_gatilho = ?""",
+            (cnae, atividade_gatilho),
+        ).fetchone()
+        if existente:
+            conn.execute(
+                """UPDATE cnae_habilitacao_profissional SET
+                     conselho_sigla = COALESCE(?, conselho_sigla),
+                     quem_executa = ?,
+                     nivel_risco = ?,
+                     fonte = COALESCE(?, fonte),
+                     observacao = COALESCE(?, observacao),
+                     atualizado_em = datetime('now', 'localtime')
+                   WHERE id = ?""",
+                (conselho_sigla, quem_executa, nivel_risco,
+                 fonte, observacao, existente["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO cnae_habilitacao_profissional
+                     (cnae, atividade_gatilho, conselho_sigla,
+                      quem_executa, nivel_risco, fonte, observacao)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (cnae, atividade_gatilho, conselho_sigla,
+                 quem_executa, nivel_risco, fonte, observacao),
+            )
+        conn.commit()
+
+
+def listar_habilitacoes_cnae(cnae: str) -> list[dict]:
+    """Retorna lista de atividades CONDICIONAIS que exigem profissional
+    habilitado para este CNAE.
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            """SELECT * FROM cnae_habilitacao_profissional
+                WHERE cnae = ?
+                ORDER BY CASE nivel_risco
+                              WHEN 'ALTO' THEN 0
+                              WHEN 'MEDIO' THEN 1
+                              ELSE 2
+                         END,
+                         atividade_gatilho""",
+            (cnae,),
+        ).fetchall()]
+
+
+def listar_conselhos_cnae(cnae: str) -> list[dict]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM cnae_conselho WHERE cnae = ? ORDER BY conselho_sigla",
+            (cnae,),
+        ).fetchall()]
+
+
+def upsert_cnae_ambiental(
+    cnae: str, *,
+    exige_licenca: bool,
+    orgao: str | None = None,
+    porte_padrao: str | None = None,
+    tipo_licenca: str | None = None,
+    observacao: str | None = None,
+    fonte: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO cnae_ambiental
+                 (cnae, exige_licenca, orgao, porte_padrao, tipo_licenca,
+                  observacao, fonte)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cnae) DO UPDATE SET
+                 exige_licenca = excluded.exige_licenca,
+                 orgao = excluded.orgao,
+                 porte_padrao = excluded.porte_padrao,
+                 tipo_licenca = excluded.tipo_licenca,
+                 observacao = excluded.observacao,
+                 fonte = excluded.fonte,
+                 atualizado_em = datetime('now','localtime')""",
+            (cnae, int(exige_licenca), orgao, porte_padrao, tipo_licenca,
+             observacao, fonte),
+        )
+        conn.commit()
+
+
+def buscar_cnae_ambiental(cnae: str) -> dict | None:
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM cnae_ambiental WHERE cnae = ?", (cnae,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def upsert_cnae_anvisa(
+    cnae: str, *,
+    exige_anvisa: bool,
+    categoria: str | None = None,
+    observacao: str | None = None,
+    fonte: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO cnae_anvisa
+                 (cnae, exige_anvisa, categoria, observacao, fonte)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(cnae) DO UPDATE SET
+                 exige_anvisa = excluded.exige_anvisa,
+                 categoria = excluded.categoria,
+                 observacao = excluded.observacao,
+                 fonte = excluded.fonte,
+                 atualizado_em = datetime('now','localtime')""",
+            (cnae, int(exige_anvisa), categoria, observacao, fonte),
+        )
+        conn.commit()
+
+
+def buscar_cnae_anvisa(cnae: str) -> dict | None:
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM cnae_anvisa WHERE cnae = ?", (cnae,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
+# CONSULTOR DE CNAE — função consolidada
+# ---------------------------------------------------------------------------
+def _normalizar_cnae(codigo: str) -> str:
+    """Aceita 4729601, 4729-6/01, 4729-601, 47.296.01 etc → '4729-6/01'."""
+    digitos = "".join(c for c in str(codigo or "") if c.isdigit())
+    if len(digitos) == 7:
+        return f"{digitos[:4]}-{digitos[4]}/{digitos[5:]}"
+    return str(codigo or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# REGRAS SETORIAIS — protege contra falsos negativos quando a base local
+# está incompleta. Aplicada ao final de `analisar_cnae`.
+# ---------------------------------------------------------------------------
+
+# Procedimentos estéticos invasivos que tornam licença sanitária OBRIGATÓRIA
+# mesmo quando a Portaria CVS 13/2025 listaria o CNAE como isento.
+PROCEDIMENTOS_INVASIVOS_SAUDE = [
+    "Toxina botulínica (Botox)",
+    "Preenchimento facial (ácido hialurônico, polilático, PMMA)",
+    "Harmonização orofacial / facial",
+    "Bioestimuladores de colágeno injetáveis",
+    "Microagulhamento profundo / drug delivery",
+    "Peelings médios e profundos",
+    "Fios de sustentação / bioestimuladores",
+    "Lipoescultura, lipoaspiração",
+    "Carboxiterapia, intradermoterapia, mesoterapia",
+    "Aplicação de PMMA, hidroxiapatita de cálcio",
+    "Plasma rico em plaquetas (PRP)",
+    "Procedimentos com laser ablativo",
+]
+
+# Conselhos potencialmente aplicáveis para CNAEs genéricos da saúde
+# (8650-0/99, 8690-9/01, etc.). O conselho efetivo depende da formação
+# do RT (Responsável Técnico) e dos profissionais que atuam na clínica.
+CONSELHOS_SAUDE_GENERICOS = [
+    ("CRM", "Conselho Regional de Medicina",
+     "Médicos — única classe com atuação irrestrita em estética invasiva (CFM 2.628/2022)"),
+    ("CRO", "Conselho Regional de Odontologia",
+     "Cirurgiões-dentistas — autorizados em harmonização orofacial (CFO 198/2019)"),
+    ("CRBM", "Conselho Regional de Biomedicina",
+     "Biomédicos com habilitação em estética (CFBM 241/2014); sob disputa judicial"),
+    ("COREN", "Conselho Regional de Enfermagem",
+     "Enfermeiros — protocolos COFEN 689/2022"),
+    ("CREFITO", "Conselho Regional de Fisioterapia e Terapia Ocupacional",
+     "Fisioterapeutas dermatofuncionais"),
+    ("CFFa", "Conselho Regional de Fonoaudiologia",
+     "Fonoaudiólogos com pós em estética orofacial"),
+    ("CRP", "Conselho Regional de Psicologia",
+     "Psicólogos"),
+    ("CRN", "Conselho Regional de Nutricionistas",
+     "Nutricionistas"),
+]
+
+
+def _aplicar_regras_setoriais(out: dict, cnae: str) -> None:
+    """Aplica regras de fallback por prefixo CNAE pra evitar falso negativo
+    crítico. Modifica `out` in-place: pode adicionar conselhos sugeridos,
+    elevar nível da vigilância, e empilhar alertas em vermelho.
+
+    Diretriz: na dúvida, ALERTAR. É melhor o usuário se incomodar com um
+    aviso a mais do que orientar errado e o cliente tomar multa.
+    """
+    secao = cnae[:2] if len(cnae) >= 2 else ""
+
+    # ============ SAÚDE HUMANA — Seções 86, 87, 88 (parcial) ============
+    if secao in ("86", "87"):
+        # Lista de CNAEs que são SEMPRE consultórios sem invasivo
+        # (puramente psicoterapia, ergonomia, etc.) — apenas alerta leve
+        cnaes_baixo_risco = {"8650-0/03", "8650-0/05"}  # psicologia / práticas alternativas
+
+        if cnae not in cnaes_baixo_risco:
+            # 1) Vigilância: força CONDICIONAL se hoje vier como ISENTO/OK
+            vig = out.get("vigilancia") or {}
+            era_isento = (
+                not vig.get("exige_licenca")
+                and not vig.get("_aviso_invasivo_aplicado")
+            )
+            if era_isento:
+                vig["_aviso_invasivo_aplicado"] = True
+                vig["nivel"] = vig.get("nivel") or "ISENCAO_CONDICIONAL"
+                vig["descricao"] = (
+                    (vig.get("descricao") or "")
+                    + " | ⚠️ ATENÇÃO: a isenção da Portaria CVS 13/2025 vale "
+                    "APENAS para atendimentos sem procedimentos invasivos. "
+                    "Botox, harmonização, preenchimento, peelings médios/"
+                    "profundos, microagulhamento profundo, laser ablativo "
+                    "ou qualquer aplicação de produto injetável OBRIGAM "
+                    "licença sanitária."
+                ).strip(" |")
+                vig["risco_sanitario"] = (
+                    vig.get("risco_sanitario") or "BAIXO_CONDICIONAL"
+                )
+                out["vigilancia"] = vig
+
+            # 2) Conselhos: se nenhum cadastrado, sugerir os 5 mais comuns
+            if not out.get("conselhos"):
+                out["conselhos"] = [
+                    {
+                        "conselho_sigla": s,
+                        "conselho_nome": n,
+                        "tipo_registro": "AMBOS",
+                        "exige_rt": 1,
+                        "fonte": f"Inferido por prefixo CNAE {secao} (saúde) — {obs}",
+                        "_inferido_setorial": True,
+                    }
+                    for s, n, obs in CONSELHOS_SAUDE_GENERICOS[:5]
+                ]
+                out["fontes"].append(
+                    "⚠️ Conselhos profissionais inferidos por prefixo CNAE "
+                    "(base local não tinha cadastro). Confirme com o RT."
+                )
+
+            # 3) Alerta crítico em vermelho
+            out["alertas"].insert(0,
+                "🚨 **ATENÇÃO CRÍTICA — CNAE de saúde humana.** "
+                "Profissionais que atuam neste CNAE DEVEM ter registro no "
+                "respectivo conselho de classe (CRM/CRO/CRBM/COREN/CREFITO/"
+                "CFFa/CRP/CRN conforme formação) e a clínica/PJ DEVE ter "
+                "inscrição PJ no conselho do RT. **Procedimentos invasivos** "
+                "(botox, harmonização, preenchimento, peelings profundos, "
+                "microagulhamento profundo, laser ablativo, plasma rico em "
+                "plaquetas, etc.) **OBRIGAM licença sanitária**, mesmo que "
+                "a Portaria CVS 13/2025 isente o CNAE em si."
+            )
+
+            # 4) Lista de procedimentos invasivos pra UI
+            out["procedimentos_invasivos_alerta"] = PROCEDIMENTOS_INVASIVOS_SAUDE
+
+    # ============ EDUCAÇÃO INFANTIL / CRECHE — 8511, 8512 ============
+    if secao == "85" and cnae[:4] in ("8511", "8512"):
+        out["alertas"].append(
+            "🚨 Educação infantil — exige autorização do Conselho Estadual/"
+            "Municipal de Educação + alvará sanitário + AVCB + adequação NR-"
+            "específica (espaços para crianças). Verifique a Resolução "
+            "CME local."
+        )
+
+    # ============ ALIMENTOS — 1011-1099, 5611, 5620 ============
+    if cnae[:2] == "10" or cnae[:4] in ("5611", "5620"):
+        if not (out.get("vigilancia") or {}).get("exige_licenca"):
+            out["alertas"].append(
+                "⚠️ CNAE de alimentos — confirme com a Vigilância Sanitária "
+                "municipal (exige Alvará Sanitário em quase todos os "
+                "municípios) e RDC ANVISA 216/2004 (manipulação)."
+            )
+
+
+def analisar_cnae(codigo: str) -> dict:
+    """Faz análise CRUZADA de um CNAE em todas as bases disponíveis.
+
+    Retorna um dict consolidado com:
+      - codigo, descricao
+      - concla{}, nr04{}, vigilancia{}, bombeiros{}, ambiental{},
+        anvisa{}, conselhos[], cgsim{}
+      - risco_consolidado: 'BAIXO' | 'MÉDIO' | 'ALTO'
+      - alertas: list[str] (avisos importantes)
+      - fontes: list[str] (legislação consultada)
+    """
+    cnae = _normalizar_cnae(codigo)
+
+    out: dict = {
+        "codigo": cnae,
+        "codigo_input": codigo,
+        "descricao": None,
+        "concla": None,
+        "nr04": None,
+        "vigilancia": None,
+        "bombeiros": None,
+        "ambiental": None,
+        "anvisa": None,
+        "conselhos": [],
+        "outros_registros": [],
+        "habilitacoes_profissionais": [],
+        "cgsim": None,
+        "risco_consolidado": "INDEFINIDO",
+        "alertas": [],
+        "fontes": [],
+    }
+
+    # 1. CONCLA — descrição oficial
+    concla = buscar_cnae_concla(cnae)
+    if concla:
+        out["concla"] = concla
+        out["descricao"] = (
+            concla.get("denominacao") or concla.get("descricao")
+        )
+        out["fontes"].append(
+            "CONCLA / IBGE — Estrutura CNAE 2.3 (cnae_concla)"
+        )
+    else:
+        out["alertas"].append(
+            f"CNAE {cnae} não encontrado na base CONCLA. Confira o código."
+        )
+
+    # 2. NR-04 — grau de risco trabalhista
+    # `buscar_risco_cnae` agora sempre retorna algo (usa fallback por
+    # divisão CNAE quando o código específico não está cadastrado).
+    # Só alertamos se o grau veio por inferência.
+    nr04 = buscar_risco_cnae(cnae)
+    if nr04:
+        out["nr04"] = nr04
+        if nr04.get("fonte"):
+            out["fontes"].append(f"NR-04: {nr04['fonte']}")
+        if nr04.get("_inferido_por_divisao"):
+            out["alertas"].append(
+                f"📊 Grau NR-04 ESTIMADO pela divisão CNAE "
+                f"({cnae[:2]}) — para SESMT/dimensionamento, confirme "
+                f"o CNAE específico no Quadro I oficial."
+            )
+    else:
+        out["alertas"].append(
+            "Grau de risco NR-04 indisponível para este CNAE — "
+            "confirme manualmente no Quadro I oficial."
+        )
+
+    # 3. Vigilância Sanitária (CVS-SP)
+    vig = buscar_vigilancia(cnae)
+    if vig:
+        out["vigilancia"] = vig
+        if vig.get("fonte"):
+            out["fontes"].append(f"Vigilância: {vig['fonte']}")
+    else:
+        out["vigilancia"] = {"exige_licenca": False, "_inferido": True}
+
+    # 4. Bombeiros (IT-01 CBPMESP)
+    bomb = buscar_bombeiros_cnae(cnae)
+    if bomb:
+        out["bombeiros"] = bomb
+        if bomb.get("fonte"):
+            out["fontes"].append(f"Bombeiros: {bomb['fonte']}")
+    else:
+        out["bombeiros"] = {"exige_avcb": False, "_inferido": True}
+
+    # 5. Ambiental (CETESB/IBAMA)
+    amb = buscar_cnae_ambiental(cnae)
+    if amb:
+        out["ambiental"] = amb
+        if amb.get("fonte"):
+            out["fontes"].append(f"Ambiental: {amb['fonte']}")
+    else:
+        out["ambiental"] = {"exige_licenca": False, "_inferido": True}
+
+    # 6. ANVISA
+    anv = buscar_cnae_anvisa(cnae)
+    if anv:
+        out["anvisa"] = anv
+        if anv.get("fonte"):
+            out["fontes"].append(f"ANVISA: {anv['fonte']}")
+    else:
+        out["anvisa"] = {"exige_anvisa": False, "_inferido": True}
+
+    # 7. Conselhos profissionais
+    out["conselhos"] = listar_conselhos_cnae(cnae)
+    if out["conselhos"]:
+        for c in out["conselhos"]:
+            if c.get("fonte"):
+                out["fontes"].append(f"{c['conselho_sigla']}: {c['fonte']}")
+
+    # 7b. Outros registros federais (CTF/IBAMA, MAPA, INMETRO, etc.)
+    out["outros_registros"] = listar_outros_registros_cnae(cnae)
+    if out["outros_registros"]:
+        for r in out["outros_registros"]:
+            if r.get("fonte"):
+                out["fontes"].append(f"{r['orgao']}: {r['fonte']}")
+
+    # 7c. Habilitação profissional CONDICIONAL — atividades dentro do
+    # CNAE que exigem profissional habilitado, mesmo sem registro da PJ.
+    # Caso clássico: clínica de estética que aplica botox.
+    out["habilitacoes_profissionais"] = listar_habilitacoes_cnae(cnae)
+    if out["habilitacoes_profissionais"]:
+        for h in out["habilitacoes_profissionais"]:
+            if h.get("fonte"):
+                out["fontes"].append(
+                    f"Habilitação ({h.get('conselho_sigla') or 'profissional'}): "
+                    f"{h['fonte']}"
+                )
+
+    # 8. CGSIM
+    try:
+        cgsim = buscar_cgsim_cnae(cnae)
+        if cgsim:
+            out["cgsim"] = cgsim
+            if cgsim.get("fonte"):
+                out["fontes"].append(f"CGSIM: {cgsim['fonte']}")
+    except Exception:
+        pass
+
+    # 8b. CAMADA DE REGRAS SETORIAIS
+    # Garante que CNAEs de saúde/educação/etc. sempre disparam alerta
+    # mesmo se a base local estiver incompleta. Esta camada existe pra
+    # prevenir falsos negativos críticos (ex.: clínica de botox que
+    # apareceu como "Vigilância OK" porque CVS 13/2025 lista o CNAE
+    # como isento).
+    _aplicar_regras_setoriais(out, cnae)
+
+    # 9. Risco consolidado
+    fatores_alto = 0
+    fatores_medio = 0
+    if out["vigilancia"] and out["vigilancia"].get("exige_licenca"):
+        fatores_alto += 1
+    if out["bombeiros"] and out["bombeiros"].get("exige_avcb"):
+        fatores_alto += 1
+    if out["ambiental"] and out["ambiental"].get("exige_licenca"):
+        fatores_alto += 1
+    if out["anvisa"] and out["anvisa"].get("exige_anvisa"):
+        fatores_alto += 1
+    if out["conselhos"]:
+        fatores_medio += 1
+    if out["nr04"] and (out["nr04"].get("grau_risco") or 0) >= 3:
+        fatores_alto += 1
+    if out["nr04"] and (out["nr04"].get("grau_risco") or 0) == 2:
+        fatores_medio += 1
+    if out.get("cgsim") and (out["cgsim"].get("risco") or "").upper() == "ALTO":
+        fatores_alto += 1
+
+    if fatores_alto >= 2:
+        out["risco_consolidado"] = "ALTO"
+    elif fatores_alto >= 1 or fatores_medio >= 1:
+        out["risco_consolidado"] = "MÉDIO"
+    else:
+        out["risco_consolidado"] = "BAIXO"
+
+    # remove duplicatas das fontes
+    out["fontes"] = list(dict.fromkeys(out["fontes"]))
+
+    # 10. Status de verificação (sub-agente Cowork)
+    ult = buscar_ultima_verificacao_cnae(cnae)
+    if ult:
+        from datetime import datetime as _dt
+        try:
+            d = _dt.strptime(ult["data_verificacao"][:10], "%Y-%m-%d")
+            dias = (_dt.now() - d).days
+            ult["dias_desde_verificacao"] = dias
+            if dias < 30:
+                ult["nivel_confianca"] = "RECENTE"
+            elif dias < 90:
+                ult["nivel_confianca"] = "MEDIO"
+            else:
+                ult["nivel_confianca"] = "ANTIGO"
+        except Exception:
+            ult["dias_desde_verificacao"] = None
+            ult["nivel_confianca"] = "DESCONHECIDO"
+    else:
+        ult = {
+            "nivel_confianca": "NUNCA",
+            "dias_desde_verificacao": None,
+            "resultado": None,
+        }
+    out["verificacao"] = ult
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CONSULTOR DE CNAE — verificação por sub-agente Cowork
+# ---------------------------------------------------------------------------
+def registrar_consulta_cnae(cnae: str, contexto: str | None = None) -> None:
+    """Loga que o usuário consultou esse CNAE no app. Usado pelo schedule
+    semanal pra priorizar revalidação dos mais consultados."""
+    cnae_norm = _normalizar_cnae(cnae)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO cnae_consulta_log (cnae, contexto) VALUES (?, ?)",
+            (cnae_norm, contexto),
+        )
+        conn.commit()
+
+
+def registrar_verificacao_cnae(
+    cnae: str,
+    resultado: str,           # 'APROVADO' / 'DIVERGENCIA' / 'NOVAS_INFOS'
+    *,
+    divergencias_count: int = 0,
+    relatorio: str | None = None,
+    fonte: str = "Sub-agente Cowork",
+    verificado_por: str | None = None,
+) -> int:
+    """Grava o resultado da verificação por sub-agente.
+    Aprovação = base local está correta.
+    Divergência = base local tem erros — Eduardo deve corrigir.
+    Novas informações = base local está incompleta mas não errada.
+    """
+    if resultado not in {"APROVADO", "DIVERGENCIA", "NOVAS_INFOS"}:
+        raise ValueError(f"resultado inválido: {resultado}")
+    cnae_norm = _normalizar_cnae(cnae)
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO cnae_verificacao
+                 (cnae, resultado, divergencias_count, relatorio, fonte, verificado_por)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (cnae_norm, resultado, divergencias_count, relatorio, fonte, verificado_por),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def buscar_ultima_verificacao_cnae(cnae: str) -> dict | None:
+    cnae_norm = _normalizar_cnae(cnae)
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT * FROM cnae_verificacao
+                WHERE cnae = ?
+                ORDER BY id DESC
+                LIMIT 1""",
+            (cnae_norm,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def historico_verificacao_cnae(cnae: str, limite: int = 10) -> list[dict]:
+    cnae_norm = _normalizar_cnae(cnae)
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            """SELECT * FROM cnae_verificacao
+                WHERE cnae = ?
+                ORDER BY id DESC LIMIT ?""",
+            (cnae_norm, limite),
+        ).fetchall()]
+
+
+def cnaes_pendentes_verificacao(
+    *, dias_max: int = 90, top_n: int = 20,
+) -> list[dict]:
+    """Retorna lista de CNAEs que MERECEM revalidação:
+    (a) consultados nos últimos 30 dias E
+    (b) sem verificação nos últimos `dias_max` dias.
+    Ordenados por nº de consultas decrescente.
+    """
+    sql = f"""
+      WITH consultas AS (
+        SELECT cnae, COUNT(*) AS n
+          FROM cnae_consulta_log
+         WHERE consultado_em >= datetime('now', '-30 days')
+         GROUP BY cnae
+      ),
+      ult_verif AS (
+        SELECT cnae, MAX(data_verificacao) AS ult
+          FROM cnae_verificacao
+         GROUP BY cnae
+      )
+      SELECT c.cnae, c.n AS consultas_30d,
+             u.ult AS ultima_verificacao,
+             CAST(julianday('now') - julianday(u.ult) AS INTEGER) AS dias_desde_verif
+        FROM consultas c
+        LEFT JOIN ult_verif u ON u.cnae = c.cnae
+       WHERE u.ult IS NULL
+          OR julianday('now') - julianday(u.ult) >= {int(dias_max)}
+       ORDER BY c.n DESC
+       LIMIT ?;
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, (top_n,)).fetchall()]
+
+
+if __name__ == "__main__":
+    init_db()
+    print(f"Banco inicializado em: {DATABASE_PATH}")

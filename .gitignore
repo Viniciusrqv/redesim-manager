@@ -1,0 +1,104 @@
+# ============================================================
+# .gitignore — REDESIM Manager
+# Garante que segredos e arquivos locais NUNCA vão pro GitHub.
+# ============================================================
+
+# --- SEGREDOS (NUNCA versionar) ---
+.env
+.env.local
+.env.*.local
+**/secrets.toml
+.streamlit/secrets.toml
+
+# --- Banco local (dados do escritório) — NUNCA versionar ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/redesim.db
+data/redesim_backup_*.db
+redesim.db
+redesim_backup_*.db
+
+# --- Documentos enviados pelo usuário ---
+data/documentos_vencimento/
+data/uploads/
+data/anexos/
+data/*.pdf
+data/*.xlsx
+data/*.xls
+
+# --- Sincronização GESTTA local ---
+data/tarefas_gestta_sync.json
+data/tarefas_*.json
+
+# --- Browser profile (Playwright) ---
+data/browser_profile/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Streamlit ---
+.streamlit/
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- macOS / Windows ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Cache do pytest / ruff ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Backup files ---
+*.bak
+*.backup
+*_backup_*
+
+# --- Playwright ---
+playwright-report/
+test-results/
+
+# --- Sempre versionado (explicitar pra evitar confusão) ---
+!.env.example
+!.gitignore
+!requirements.txt
+!README.md
+!.streamlit/config.toml
