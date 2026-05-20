@@ -107,7 +107,13 @@ st.set_page_config(
 from auth import exigir_login, renderizar_widget_sidebar
 _user = exigir_login()
 
-init_db()
+# Init do banco só uma vez por sessão (sem essa cache, init_db roda
+# em CADA reload e adiciona ~2s de latência por click no Postgres).
+@st.cache_resource(show_spinner=False)
+def _ensure_db_initialized():
+    init_db()
+    return True
+_ensure_db_initialized()
 
 # =====================================================================
 # DESIGN SYSTEM — REDESIM Manager
@@ -125,11 +131,16 @@ init_db()
 # Warning:  #D97706 / bg #FFFBEB
 # Success:  #047857 / bg #F0FDF5
 # =====================================================================
+# Injeta a fonte via tag link (mais confiável que @import dentro de <style>)
+st.markdown(
+    '<link href="https://fonts.googleapis.com/css2?'
+    'family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">',
+    unsafe_allow_html=True,
+)
+
 st.markdown(
     """
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
       /* ===== Esconde elementos do Streamlit Cloud no header ===== */
       /* Esconde "Share", "Star", "Edit", GitHub, menu ⋮, "Manage app" */
       [data-testid="stToolbar"],
@@ -6453,164 +6464,4 @@ def pagina_configuracoes():
                         if st.button("❌ Rejeitar",
                                       key=f"rej_{s['id']}",
                                       use_container_width=True):
-                            try:
-                                atualizar_solicitacao_cadastro(
-                                    s["id"], "rejeitada",
-                                    revisado_por=admin_email,
-                                    observacao=obs or None,
-                                )
-                                st.warning("Solicitação rejeitada.")
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f"Erro: {exc}")
-
-    # ---- Status do backend de banco ----
-    from db import info_backend
-    info = info_backend()
-    with st.container(border=True):
-        st.markdown("### 💾 Banco de dados")
-        if info["backend"] == "postgres":
-            st.success(f"{info['label']}")
-            st.caption(
-                "Os dados estão persistindo no Postgres do Supabase. "
-                "Múltiplos usuários da equipe podem acessar simultaneamente."
-            )
-        else:
-            st.warning(f"{info['label']}")
-            st.caption(
-                "⚠ Você está em **modo desenvolvimento local** — o banco "
-                "é um arquivo SQLite no seu PC. Para multi-usuário, "
-                "configure a variável `DATABASE_URL` com o Postgres do "
-                "Supabase."
-            )
-
-    # ---- JWT do GESTTA ----
-    with st.container(border=True):
-        st.markdown("### 🔑 Token GESTTA (JWT)")
-        st.caption(
-            "O token vence a cada ~24 horas. Quando o app começar a "
-            "retornar erro **401** ao buscar tarefas, atualize o token "
-            "aqui."
-        )
-        try:
-            from utils.gestta_api import jwt_info
-            from config import GESTTA_JWT
-            atual = jwt_info(GESTTA_JWT) if GESTTA_JWT else {"valido": False}
-        except Exception:
-            atual = {"valido": False, "erro": "não configurado"}
-
-        if atual.get("valido"):
-            cor = "🟢"
-            if atual.get("expirado"):
-                cor = "🔴"
-            elif (atual.get("horas_restantes") or 0) < 6:
-                cor = "🟡"
-            st.markdown(
-                f"**Status:** {cor} {('expirado' if atual.get('expirado') else 'ativo')}"
-                + f" · expira em **{atual.get('horas_restantes', '—')}h**"
-            )
-            st.caption(
-                f"Usuário: `{atual.get('user_name') or '—'}` · "
-                f"Empresa: `{atual.get('company') or '—'}`"
-            )
-        else:
-            st.error("Token não configurado ou inválido.")
-
-        with st.form("form_jwt"):
-            novo_jwt = st.text_area(
-                "Colar o novo JWT (começando com `JWT eyJ...`)",
-                height=100,
-                placeholder="JWT eyJhbGciOi...",
-                help=(
-                    "Como pegar: abra app.gestta.com.br logado, F12 → "
-                    "Application → Local Storage → ngStorage-jwt — copie "
-                    "o valor SEM as aspas."
-                ),
-            )
-            salvar = st.form_submit_button(
-                "💾 Salvar token", type="primary", use_container_width=True,
-            )
-        if salvar:
-            if not novo_jwt.strip():
-                st.warning("Cole o token antes de salvar.")
-            else:
-                # Em produção (Streamlit Cloud) precisaria de uma forma de
-                # persistir entre redeploys. Por enquanto, salva em
-                # st.session_state pra durar a sessão, e mostra instrução.
-                st.session_state["GESTTA_JWT_OVERRIDE"] = novo_jwt.strip()
-                os.environ["GESTTA_JWT"] = novo_jwt.strip()
-                st.success(
-                    "✅ Token aplicado nesta sessão. "
-                    "Em produção, peça pro admin atualizar o segredo "
-                    "GESTTA_JWT no Streamlit Cloud para que persista entre "
-                    "reinícios."
-                )
-
-    # ---- Usuário logado ----
-    with st.container(border=True):
-        st.markdown("### 👤 Sessão atual")
-        from auth import usuario_atual
-        u = usuario_atual() or {}
-        st.markdown(
-            f"- **Nome:** {u.get('nome', '—')}\n"
-            f"- **Email:** {u.get('email', '—')}\n"
-            f"- **ID:** `{u.get('id', '—')}`"
-        )
-        if u.get("_dev"):
-            st.info(
-                "🧪 Você está em **modo dev** (sem autenticação). "
-                "Em produção, este painel mostrará o usuário real do "
-                "Supabase Auth."
-            )
-
-    # ---- Versões / Saúde ----
-    with st.container(border=True):
-        st.markdown("### 📦 Versões instaladas")
-        try:
-            import importlib.metadata as md
-            versoes = {p: md.version(p) for p in [
-                "streamlit", "pandas", "psycopg2-binary",
-                "supabase", "openpyxl",
-            ] if _pkg_existe(p)}
-            cols_v = st.columns(min(len(versoes) or 1, 5))
-            for i, (pkg, v) in enumerate(versoes.items()):
-                with cols_v[i % len(cols_v)]:
-                    st.metric(pkg, v)
-        except Exception as exc:
-            st.caption(f"(não foi possível listar versões: {exc})")
-
-
-def _pkg_existe(nome: str) -> bool:
-    try:
-        import importlib.metadata as md
-        md.version(nome)
-        return True
-    except Exception:
-        return False
-
-
-# ---------------------------------------------------------
-# ROTEAMENTO
-# ---------------------------------------------------------
-PAGINAS = {
-    "📊 Dashboard/Kanban": pagina_dashboard,
-    "➕ Novo Processo": pagina_novo_processo,
-    "📄 Documentos": pagina_documentos_vencimento,
-    "🏢 Empresas / REDESIM": pagina_empresas_redesim,
-    "📋 Tarefas GESTTA": pagina_tarefas_gestta,
-    "📌 Pendências Gerais": pagina_pendencias,
-    "🔬 Consultor de CNAE": pagina_consulta_cnae,
-    "🏷️ Classificador CNAE": pagina_classificador,
-    "📋 Matriz de Risco CNAE": pagina_matriz_risco,
-    "🏥 Portaria CVS-SP (Vigilância)": pagina_vigilancia,
-    "🚒 Matriz IT-01 Bombeiros": pagina_bombeiros,
-    "📥 Atualizar Normas": pagina_atualizar_normas,
-    "📲 Configurar Telegram": pagina_telegram,
-    "⏰ Lembretes / Testes": pagina_lembretes,
-    "⚙️ Configurações": pagina_configuracoes,
-}
-
-# Widget do usuário logado na sidebar
-renderizar_widget_sidebar()
-
-PAGINAS[pagina]()
+    

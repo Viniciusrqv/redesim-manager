@@ -210,15 +210,38 @@ class _PgCursor:
         self._cur.close()
 
 
+_PG_POOL = None  # connection pool global (criado sob demanda)
+
+
+def _get_pool():
+    """Cria/retorna o pool de conexões Postgres. Cada request reusa
+    uma conexão existente em vez de abrir/fechar (que custa ~100ms
+    cada vez por causa de TLS + autenticação)."""
+    global _PG_POOL
+    if _PG_POOL is None:
+        from psycopg2.pool import ThreadedConnectionPool
+        _PG_POOL = ThreadedConnectionPool(
+            minconn=1, maxconn=10,
+            dsn=DATABASE_URL,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+    return _PG_POOL
+
+
 class _PgConn:
     """Wrapper de conexão Postgres com API parecida com sqlite3.Connection.
 
     Suporta: with-statement, .execute(), .commit(), .rollback(), .close().
+    Usa connection pool pra evitar overhead de abrir/fechar a cada query.
     """
     def __init__(self, dsn: str):
-        self._conn = psycopg2.connect(
-            dsn, cursor_factory=psycopg2.extras.RealDictCursor,
-        )
+        pool = _get_pool()
+        self._conn = pool.getconn()
+        # Garante que a conexão pegada não está num estado ruim
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
 
     # Context manager
     def __enter__(self):

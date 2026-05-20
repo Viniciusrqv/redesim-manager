@@ -189,9 +189,13 @@ def _acao_reset_senha():
 def _renderizar_tela_login():
     """Tela de login com 3 abas — sem st.form pra evitar o warning."""
     # CSS pra centralizar e estilizar
+    st.markdown(
+        '<link href="https://fonts.googleapis.com/css2?'
+        'family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">',
+        unsafe_allow_html=True,
+    )
     st.markdown("""
       <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         html, body, [class*="css"], .stApp {
           font-family: 'Inter', -apple-system, BlinkMacSystemFont,
                        'Segoe UI', Roboto, sans-serif !important;
