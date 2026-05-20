@@ -190,28 +190,66 @@ def _renderizar_tela_login():
     """Tela de login com 3 abas — sem st.form pra evitar o warning."""
     # CSS pra centralizar e estilizar
     st.markdown("""
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
       <style>
-        .block-container { padding-top: 4rem; max-width: 480px; }
+        html, body, [class*="css"], .stApp {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont,
+                       'Segoe UI', Roboto, sans-serif !important;
+          background: #F6F8FC;
+        }
+        .block-container { padding-top: 5rem; max-width: 460px; }
+        .login-brand {
+          display: inline-block;
+          background: #1F4FD3;
+          color: #FFFFFF !important;
+          width: 56px; height: 56px;
+          border-radius: 12px;
+          font-size: 26px; font-weight: 600;
+          line-height: 56px;
+          text-align: center;
+          margin: 0 auto 20px;
+        }
+        .login-wrap {
+          background: #FFFFFF;
+          border: 1px solid #E5E9F2;
+          border-radius: 12px;
+          padding: 32px 28px;
+          box-shadow: 0 2px 8px rgba(15, 23, 42, .04);
+        }
         .login-title {
-          font-size: 26px; font-weight: 800; text-align: center;
-          margin-bottom: 4px; color: #F9FAFB;
+          font-size: 22px; font-weight: 600;
+          text-align: center;
+          margin-bottom: 4px; color: #1A2A4A !important;
         }
         .login-sub {
-          text-align: center; color: #9CA3AF;
+          text-align: center; color: #6B7280;
           font-size: 13px; margin-bottom: 24px;
+        }
+        .stButton > button[kind="primary"] {
+          background: #1F4FD3 !important;
+          border-color: #1F4FD3 !important;
+          font-weight: 500;
+        }
+        .stButton > button[kind="primary"]:hover {
+          background: #1A41B3 !important;
+          border-color: #1A41B3 !important;
         }
       </style>
     """, unsafe_allow_html=True)
 
     st.markdown(
-        "<div class='login-title'>📝 REDESIM Manager</div>"
-        "<div class='login-sub'>CSM Contabilidade — sistema de gestão de "
-        "licenças e processos</div>",
+        "<div style='text-align:center;'>"
+        "<div class='login-brand'>R</div>"
+        "</div>"
+        "<div class='login-title'>REDESIM Manager</div>"
+        "<div class='login-sub'>CSM Contabilidade · gestão de licenças "
+        "e processos</div>",
         unsafe_allow_html=True,
     )
 
     tab_entrar, tab_cadastrar, tab_reset = st.tabs([
-        "🔐 Entrar", "📝 Criar conta", "🔑 Esqueci a senha",
+        "Entrar", "Criar conta", "Esqueci a senha",
     ])
 
     # -------- ENTRAR --------
@@ -224,7 +262,7 @@ def _renderizar_tela_login():
             "Senha", type="password", key="login_senha",
         )
         st.button(
-            "🔓 Entrar", type="primary", use_container_width=True,
+            "Entrar", type="primary", use_container_width=True,
             on_click=_acao_login, key="btn_login",
         )
         msg = st.session_state.pop("_login_msg", None)
@@ -259,7 +297,7 @@ def _renderizar_tela_login():
             height=70,
         )
         st.button(
-            "📨 Solicitar acesso", type="primary",
+            "Solicitar acesso", type="primary",
             use_container_width=True,
             on_click=_acao_solicitar_cadastro, key="btn_cad",
         )
@@ -279,7 +317,8 @@ def _renderizar_tela_login():
             placeholder="seu.email@csm.com.br",
         )
         st.button(
-            "📧 Enviar link", use_container_width=True,
+            "Enviar link de recuperação", type="primary",
+            use_container_width=True,
             on_click=_acao_reset_senha, key="btn_reset",
         )
         msg = st.session_state.pop("_reset_msg", None)

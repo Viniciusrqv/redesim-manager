@@ -93,8 +93,8 @@ from utils.notifier import enviar_alerta, enviar_telegram
 # SETUP INICIAL
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="REDESIM Manager",
-    page_icon="📝",
+    page_title="REDESIM Manager · CSM Contabilidade",
+    page_icon="🔷",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -109,171 +109,272 @@ _user = exigir_login()
 
 init_db()
 
-# CSS leve para deixar o dashboard com cara de painel moderno.
-# IMPORTANTE: forçamos cores explícitas no texto dos cards porque o tema
-# dark do Streamlit aplicaria fonte branca, ficando ilegível em fundo claro.
+# =====================================================================
+# DESIGN SYSTEM — REDESIM Manager
+# Paleta B2 (Azul royal) — corporativo moderno
+# Brand:    #1F4FD3  →  primary, links, destaques
+# Hover:    #1A41B3
+# Light bg: #E8EFFE  →  highlights / item ativo
+# Body:     #F6F8FC
+# Surface:  #FFFFFF  →  cards
+# Border:   #E5E9F2
+# Texto 1:  #1A2A4A  →  títulos / valor
+# Texto 2:  #4B5563  →  labels / body
+# Texto 3:  #6B7280  →  hints
+# Danger:   #DC2626 / bg #FEF2F2
+# Warning:  #D97706 / bg #FFFBEB
+# Success:  #047857 / bg #F0FDF5
+# =====================================================================
 st.markdown(
     """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-      /* KPI cards customizados — paleta mais saturada e legível */
-      .kpi-card {
-        background: linear-gradient(135deg, var(--bg-from), var(--bg-to));
-        border: 2px solid var(--border-c);
-        border-radius: 16px;
-        padding: 22px 22px;
-        text-align: center;
-        min-height: 150px;
-        box-shadow: 0 4px 12px rgba(0,0,0,.10);
+      /* ===== Tipografia base ===== */
+      html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont,
+                     'Segoe UI', Roboto, sans-serif !important;
       }
-      .kpi-card * { color: #111827 !important; }   /* texto sempre escuro */
-      .kpi-icon { font-size: 34px; line-height: 1; margin-bottom: 10px; }
+      .stApp {
+        background: #F6F8FC;
+      }
+
+      /* ===== KPI cards (Visão geral — topo do Dashboard) ===== */
+      .kpi-card {
+        background: #FFFFFF;
+        border: 1px solid #E5E9F2;
+        border-top: 3px solid var(--accent-c, #1F4FD3);
+        border-radius: 8px;
+        padding: 18px 20px;
+        min-height: 130px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+        transition: box-shadow .15s ease, transform .15s ease;
+      }
+      .kpi-card:hover {
+        box-shadow: 0 4px 12px rgba(15, 23, 42, .08);
+      }
+      .kpi-card * { color: #1A2A4A !important; }
+      .kpi-icon {
+        font-size: 22px; line-height: 1; margin-bottom: 8px;
+        color: var(--accent-c, #1F4FD3) !important;
+      }
       .kpi-label {
-        font-size: 13px !important;
+        font-size: 12px !important;
         text-transform: uppercase;
-        letter-spacing: 1.2px;
-        font-weight: 800;
-        color: #1F2937 !important;
+        letter-spacing: .6px;
+        font-weight: 600;
+        color: #6B7280 !important;
+        margin-bottom: 4px;
       }
       .kpi-value {
-        font-size: 40px; font-weight: 900; line-height: 1.1;
-        margin-top: 8px;
+        font-size: 32px; font-weight: 600; line-height: 1.1;
+        margin-top: 4px;
+        color: #1A2A4A !important;
       }
-      .kpi-value.accent { color: var(--accent-c) !important; }
+      .kpi-value.accent { color: var(--accent-c, #1F4FD3) !important; }
       .kpi-sub {
-        font-size: 13px;
-        margin-top: 8px;
-        font-weight: 600;
-        color: #1F2937 !important;
+        font-size: 12px;
+        margin-top: 6px;
+        font-weight: 400;
+        color: #6B7280 !important;
       }
-      /* Mini-card por categoria (linha de baixo) */
+
+      /* ===== Mini-card por categoria ===== */
       .mini-card {
         background: #FFFFFF;
-        border: 1px solid #D1D5DB;
-        border-radius: 12px;
-        padding: 16px 12px;
-        text-align: center;
-        min-height: 125px;
-        box-shadow: 0 2px 6px rgba(0,0,0,.08);
+        border: 1px solid #E5E9F2;
+        border-radius: 8px;
+        padding: 14px 12px;
+        text-align: left;
+        min-height: 105px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
       }
-      .mini-card * { color: #111827 !important; }
-      .mini-card .mc-icon { font-size: 26px; }
+      .mini-card * { color: #1A2A4A !important; }
+      .mini-card .mc-icon {
+        font-size: 18px;
+        color: #6B7280 !important;
+      }
       .mini-card .mc-label {
-        font-size: 13px; font-weight: 700; color: #374151 !important;
+        font-size: 11px; font-weight: 600; color: #6B7280 !important;
         margin: 4px 0 6px;
         text-transform: uppercase; letter-spacing: .5px;
       }
       .mini-card .mc-value {
-        font-size: 30px; font-weight: 900;
+        font-size: 24px; font-weight: 600;
+        color: #1A2A4A !important;
       }
       .mini-card .mc-sub {
-        font-size: 12px; margin-top: 4px; font-weight: 700;
+        font-size: 11px; margin-top: 4px; font-weight: 500;
+        color: #6B7280 !important;
       }
-      .mini-card.crit { border-color: #EF4444; background: #FEF2F2;
-                        box-shadow: 0 2px 8px rgba(239,68,68,.18); }
-      .mini-card.warn { border-color: #F59E0B; background: #FFFBEB;
-                        box-shadow: 0 2px 8px rgba(245,158,11,.18); }
-      .mini-card.crit .mc-value { color: #DC2626 !important; }
+      .mini-card.crit {
+        border-color: #FECACA;
+        border-left: 3px solid #DC2626;
+        background: #FEFCFC;
+      }
+      .mini-card.warn {
+        border-color: #FDE68A;
+        border-left: 3px solid #D97706;
+        background: #FFFDF8;
+      }
+      .mini-card.crit .mc-value { color: #B91C1C !important; }
       .mini-card.warn .mc-value { color: #B45309 !important; }
-      .mini-card.crit .mc-sub  { color: #DC2626 !important; }
-      .mini-card.warn .mc-sub  { color: #B45309 !important; }
+      .mini-card.crit .mc-sub   { color: #B91C1C !important; }
+      .mini-card.warn .mc-sub   { color: #B45309 !important; }
 
-      /* Barra de saúde 🔴/🟡/🟢 */
+      /* ===== Barra de saúde ===== */
       .health-bar {
-        display: flex; height: 10px; border-radius: 5px;
-        overflow: hidden; margin: 8px 0 6px 0;
-        background: rgba(0,0,0,.06);
+        display: flex; height: 6px; border-radius: 3px;
+        overflow: hidden; margin: 8px 0 8px 0;
+        background: #E5E9F2;
       }
       .health-bar > div { transition: width .3s ease; }
-      .health-r { background: #EF4444; }
-      .health-y { background: #F59E0B; }
-      .health-g { background: #10B981; }
+      .health-r { background: #DC2626; }
+      .health-y { background: #D97706; }
+      .health-g { background: #047857; }
       .health-legend {
         font-size: 12px; display: flex; gap: 18px;
-        font-weight: 500;
+        font-weight: 500; color: #6B7280;
       }
-      /* Header de bloco */
+
+      /* ===== Header de bloco ===== */
       .bloco-header {
-        font-size: 18px; font-weight: 700; margin-bottom: 8px;
+        font-size: 16px; font-weight: 600;
+        margin-bottom: 12px;
         display: flex; align-items: center; gap: 8px;
+        color: #1A2A4A;
       }
-      /* Header do CNAE consultado — fundo SÓLIDO claro pra ficar legível
-         em qualquer tema. A cor de risco fica só na borda lateral e no badge. */
+
+      /* ===== Header do CNAE consultado ===== */
       .cnae-header {
-        padding: 22px 24px; border-radius: 14px; margin: 8px 0 16px 0;
-        background: #F9FAFB !important;
+        padding: 22px 24px; border-radius: 8px; margin: 8px 0 16px 0;
+        background: #FFFFFF !important;
       }
-      .cnae-header * { color: #111827 !important; }
+      .cnae-header * { color: #1A2A4A !important; }
       .cnae-header .cnae-label {
-        font-size: 13px !important; font-weight: 700;
-        text-transform: uppercase; letter-spacing: 1.2px;
-        color: #374151 !important;
+        font-size: 12px !important; font-weight: 600;
+        text-transform: uppercase; letter-spacing: .6px;
+        color: #6B7280 !important;
       }
       .cnae-header .cnae-codigo {
-        font-size: 32px; font-weight: 800; line-height: 1.1;
+        font-size: 28px; font-weight: 600; line-height: 1.1;
         margin: 8px 0 10px;
-        color: #111827 !important;
+        color: #1A2A4A !important;
       }
       .cnae-header .cnae-desc {
-        font-size: 16px; line-height: 1.45; font-weight: 600;
-        color: #1F2937 !important;
+        font-size: 15px; line-height: 1.5; font-weight: 400;
+        color: #4B5563 !important;
       }
       .cnae-header .cnae-badge {
         display: inline-block; margin-top: 14px;
-        padding: 8px 20px; border-radius: 10px;
-        font-weight: 800; font-size: 14px;
+        padding: 6px 16px; border-radius: 6px;
+        font-weight: 600; font-size: 12px;
         letter-spacing: .4px;
+        text-transform: uppercase;
       }
       .cnae-header .cnae-badge,
       .cnae-header .cnae-badge * { color: #FFFFFF !important; }
 
-      /* Sidebar — letras um pouco maiores no menu de Navegação */
+      /* ===== Sidebar ===== */
+      section[data-testid="stSidebar"] {
+        background: #FFFFFF;
+        border-right: 1px solid #E5E9F2;
+      }
       section[data-testid="stSidebar"] [role="radiogroup"] label,
       section[data-testid="stSidebar"] [role="radiogroup"] label * {
-        font-size: 15.5px !important;
-        line-height: 1.45 !important;
+        font-size: 14px !important;
+        line-height: 1.5 !important;
+        color: #4B5563 !important;
       }
       section[data-testid="stSidebar"] [role="radiogroup"] label {
-        padding: 4px 0 !important;
+        padding: 6px 4px !important;
+      }
+      /* item selecionado do menu */
+      section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked),
+      section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) * {
+        color: #1F4FD3 !important;
+        font-weight: 500 !important;
       }
       section[data-testid="stSidebar"] h1,
       section[data-testid="stSidebar"] .stMarkdown h1 {
-        font-size: 22px !important;
+        font-size: 18px !important;
+        font-weight: 600;
+        color: #1A2A4A !important;
       }
-      /* Cards de área (Vigilância, Bombeiros, Ambiental, etc.) */
+
+      /* ===== Cards de área (CNAE consultor) ===== */
       .card-area {
         background: #FFFFFF;
-        border: 1px solid #E5E7EB;
-        border-radius: 12px;
+        border: 1px solid #E5E9F2;
+        border-radius: 8px;
         padding: 16px;
         min-height: 140px;
-        box-shadow: 0 1px 2px rgba(0,0,0,.04);
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
       }
-      .card-area * { color: #1F2937 !important; }
+      .card-area * { color: #1A2A4A !important; }
       .card-area-head {
         display: flex; justify-content: space-between;
         align-items: center; margin-bottom: 10px;
       }
       .card-area-titulo {
-        font-size: 14px; font-weight: 700;
+        font-size: 13px; font-weight: 600;
+        color: #1A2A4A !important;
       }
       .card-area-badge {
-        padding: 3px 10px; border-radius: 8px;
-        font-size: 12px; font-weight: 700;
+        padding: 3px 10px; border-radius: 4px;
+        font-size: 11px; font-weight: 600;
+        letter-spacing: .3px; text-transform: uppercase;
       }
       .card-area-badge,
       .card-area-badge * { color: #FFFFFF !important; }
       .card-area-body {
         font-size: 13px; line-height: 1.55;
+        color: #4B5563 !important;
       }
-      .card-area-body i { color: #4B5563 !important; font-style: italic; }
+      .card-area-body i { color: #6B7280 !important; font-style: italic; }
       .card-area-fonte {
         font-size: 11px;
         margin-top: 10px;
-        border-top: 1px solid #E5E7EB;
+        border-top: 1px solid #E5E9F2;
         padding-top: 7px;
-        color: #4B5563 !important;
+        color: #6B7280 !important;
       }
-      .card-area-fonte * { color: #4B5563 !important; }
+      .card-area-fonte * { color: #6B7280 !important; }
+
+      /* ===== Botões nativos do Streamlit — refinados ===== */
+      .stButton > button {
+        font-weight: 500;
+        border-radius: 6px;
+        transition: all .15s ease;
+      }
+      .stButton > button[kind="primary"] {
+        background: #1F4FD3 !important;
+        border-color: #1F4FD3 !important;
+      }
+      .stButton > button[kind="primary"]:hover {
+        background: #1A41B3 !important;
+        border-color: #1A41B3 !important;
+      }
+
+      /* ===== Headers das páginas ===== */
+      h1, h2, h3, h4, h5, h6 {
+        color: #1A2A4A;
+        font-weight: 600;
+      }
+      h1 { font-size: 24px !important; }
+      h2 { font-size: 20px !important; }
+      h3 { font-size: 17px !important; }
+
+      /* ===== Links ===== */
+      a, .stMarkdown a { color: #1F4FD3; }
+      a:hover { color: #1A41B3; }
+
+      /* ===== Containers nativos do Streamlit (bordered) ===== */
+      [data-testid="stVerticalBlock"] > div[style*="border"] {
+        border-color: #E5E9F2 !important;
+        border-radius: 8px;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -317,7 +418,17 @@ _components.html(
 # ---------------------------------------------------------
 # SIDEBAR — Navegação + Status de configuração
 # ---------------------------------------------------------
-st.sidebar.title("📝 REDESIM Manager")
+st.sidebar.markdown(
+    "<div style='display:flex; align-items:center; gap:10px; "
+    "margin-bottom:6px;'>"
+    "<div style='background:#1F4FD3; color:#FFF; width:34px; height:34px; "
+    "border-radius:8px; text-align:center; line-height:34px; "
+    "font-weight:600; font-size:16px;'>R</div>"
+    "<div style='font-weight:600; font-size:16px; color:#1A2A4A;'>"
+    "REDESIM Manager</div>"
+    "</div>",
+    unsafe_allow_html=True,
+)
 _horarios_str = HORARIO_LEMBRETE.replace(",", " e ")
 st.sidebar.caption(
     f"🟡 {DIAS_AMARELO}d · 🔴 {DIAS_VERMELHO}d · "
@@ -573,31 +684,31 @@ def _resumo_consolidado_dashboard():
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(_kpi_card_html(
-            "🔴", "Crítico", total_r,
-            "prazo vencido / estourado",
-            accent="#B91C1C", bg_from="#FECACA", bg_to="#FCA5A5",
-            border="#EF4444",
+            "", "Crítico", total_r,
+            "prazo vencido ou estourado",
+            accent="#DC2626", bg_from="#FFFFFF", bg_to="#FFFFFF",
+            border="#DC2626",
         ), unsafe_allow_html=True)
     with c2:
         st.markdown(_kpi_card_html(
-            "🟡", "Em alerta", total_y,
+            "", "Em alerta", total_y,
             "perto do limite",
-            accent="#B45309", bg_from="#FDE68A", bg_to="#FCD34D",
-            border="#F59E0B",
+            accent="#D97706", bg_from="#FFFFFF", bg_to="#FFFFFF",
+            border="#D97706",
         ), unsafe_allow_html=True)
     with c3:
         st.markdown(_kpi_card_html(
-            "🟢", "Tudo ok", total_g,
+            "", "No prazo", total_g,
             "dentro do prazo",
-            accent="#047857", bg_from="#A7F3D0", bg_to="#6EE7B7",
-            border="#10B981",
+            accent="#047857", bg_from="#FFFFFF", bg_to="#FFFFFF",
+            border="#047857",
         ), unsafe_allow_html=True)
     with c4:
         st.markdown(_kpi_card_html(
-            "📊", "Total aberto", total_itens,
+            "", "Total aberto", total_itens,
             "fontes monitoradas: 6",
-            accent="#3730A3", bg_from="#C7D2FE", bg_to="#A5B4FC",
-            border="#6366F1",
+            accent="#1F4FD3", bg_from="#FFFFFF", bg_to="#FFFFFF",
+            border="#1F4FD3",
         ), unsafe_allow_html=True)
 
     # Linha 2: barra de saúde + 6 mini-cards por categoria
@@ -643,7 +754,7 @@ def _resumo_consolidado_dashboard():
         if not df_donut.empty:
             cor_scale = alt.Scale(
                 domain=["🔴 Crítico", "🟡 Em alerta", "🟢 Tudo ok"],
-                range=["#EF4444", "#F59E0B", "#10B981"],
+                range=["#DC2626", "#D97706", "#047857"],
             )
             donut = (
                 alt.Chart(df_donut)
@@ -692,7 +803,7 @@ def _resumo_consolidado_dashboard():
                               var_name="Status", value_name="Qtd")
         cor_scale_b = alt.Scale(
             domain=["Crítico", "Alerta", "OK"],
-            range=["#EF4444", "#F59E0B", "#10B981"],
+            range=["#DC2626", "#D97706", "#047857"],
         )
         bar = (
             alt.Chart(df_long)

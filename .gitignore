@@ -63,8 +63,9 @@ venv/
 env/
 ENV/
 
-# --- Streamlit ---
-.streamlit/
+# --- Streamlit (deixa config.toml passar, bloqueia secrets) ---
+.streamlit/secrets.toml
+.streamlit/credentials.toml
 
 # --- IDEs ---
 .vscode/

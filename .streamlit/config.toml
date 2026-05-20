@@ -1,0 +1,25 @@
+# =====================================================================
+# REDESIM Manager — tema oficial
+# Paleta B2 (Azul royal) — corporativo moderno
+# =====================================================================
+[theme]
+# Cores principais
+primaryColor          = "#1F4FD3"   # azul royal — links, botões, destaques
+backgroundColor       = "#FFFFFF"   # fundo dos painéis brancos
+secondaryBackgroundColor = "#F6F8FC" # fundo geral (sutilmente azulado)
+textColor             = "#1A2A4A"   # texto principal (azul-marinho escuro)
+
+# Tipografia
+font                  = "sans serif"
+# Streamlit usa sans-serif por padrão (sistema). Pra Inter:
+# precisaria injetar via CSS (o app.py já faz isso).
+
+[server]
+# Limites de upload (PDFs, planilhas, etc.)
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showSidebarNavigation = true
