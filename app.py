@@ -159,6 +159,63 @@ _css_body = _carregar_css()
 if _css_body:
     st.markdown(f"<style>{_css_body}</style>", unsafe_allow_html=True)
 
+
+# =====================================================================
+# CACHE DE QUERIES — performance
+# ---------------------------------------------------------------------
+# O app online (Streamlit Cloud + Supabase) era lento porque cada
+# clique re-executava as mesmas queries grandes (listar_empresas,
+# listar_processos, listar_pendencias, listar_documentos_vencimento,
+# etc.) e cada round-trip pro Postgres custa ~50-150ms.
+#
+# Com @st.cache_data(ttl=N) o resultado fica em memória por N segundos
+# e os cliques entre páginas usam o cache. TTL curto pra mudanças
+# da equipe aparecerem rapidinho.
+#
+# Para invalidar o cache imediatamente após gravar (ex.: depois de
+# criar/editar/excluir), use a função `_invalidar_cache_db()` abaixo.
+# =====================================================================
+@st.cache_data(ttl=45, show_spinner=False)
+def _cache_empresas():
+    return listar_empresas()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cache_processos():
+    return listar_processos()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cache_pendencias_abertas():
+    return listar_pendencias(apenas_abertas=True)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cache_documentos_vigentes():
+    return listar_documentos_vencimento(apenas_vigentes=True)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cache_alvaras_bombeiros():
+    return listar_alvaras_bombeiros()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cache_tarefas_gestta_pendentes():
+    return listar_tarefas_gestta(apenas_pendentes=True)
+
+
+def _invalidar_cache_db():
+    """Limpa TODOS os caches de query. Chame depois de criar/editar/
+    excluir qualquer registro pra forçar releitura do banco."""
+    _cache_empresas.clear()
+    _cache_processos.clear()
+    _cache_pendencias_abertas.clear()
+    _cache_documentos_vigentes.clear()
+    _cache_alvaras_bombeiros.clear()
+    _cache_tarefas_gestta_pendentes.clear()
+
+
 # Habilita o corretor ortográfico do navegador (em pt-BR) em todos os
 # campos de texto e textareas. O Streamlit não seta `spellcheck` por
 # padrão, então injetamos um pequeno script com MutationObserver que
@@ -385,8 +442,8 @@ def _health_bar_html(r: int, y: int, g: int) -> str:
 
 def _resumo_consolidado_dashboard():
     """Header visual do dashboard: KPI cards + barra de saúde global."""
-    # Coleta dados
-    pends = listar_pendencias(apenas_abertas=True)
+    # Coleta dados (cache de 30s — aceitável pro KPI)
+    pends = _cache_pendencias_abertas()
     pend_r = sum(1 for p in pends if p["alerta"] == "🔴")
     pend_y = sum(1 for p in pends if p["alerta"] == "🟡")
     pend_g = sum(1 for p in pends if p["alerta"] == "🟢")
@@ -793,7 +850,7 @@ def _bloco_protocolos_redesim_dashboard():
 
     from datetime import datetime as _dt
     hoje = _dt.now()
-    emps = {e["id"]: e["razao_social"] for e in listar_empresas()}
+    emps = {e["id"]: e["razao_social"] for e in _cache_empresas()}
 
     # enriquece com cor + dias + razao_social
     enriquecidos = []
@@ -1387,7 +1444,7 @@ def pagina_dashboard():
     _bloco_gestta_dashboard()
 
     # === Processos REDESIM (sistema antigo + filtros existentes) ===
-    processos = listar_processos()
+    processos = _cache_processos()
     if not processos:
         st.info(
             "Nenhum processo REDESIM cadastrado ainda. Use **Novo Processo** "
@@ -1673,7 +1730,7 @@ def _inferir_tipo_redesim_por_tipo_processo(tipo_processo: str) -> str:
 def pagina_novo_processo():
     st.header("➕ Novo Processo REDESIM")
 
-    empresas = listar_empresas()
+    empresas = _cache_empresas()
     empresa_opts = {f"{e['razao_social']} ({e['cnpj'] or 's/ CNPJ'})": e["id"]
                     for e in empresas}
 
@@ -3327,7 +3384,7 @@ def pagina_documentos_vencimento():
             "— abra a aba **🚒 Bombeiros** abaixo."
         )
 
-    empresas = listar_empresas()
+    empresas = _cache_empresas()
     if not empresas:
         st.info("Cadastre uma empresa na página **Novo Processo** antes.")
         return
@@ -4185,7 +4242,7 @@ def pagina_empresas_redesim():
     # Cross-link do dashboard: pré-seleciona empresa via session_state
     focus_eid = st.session_state.pop("focus_empresa_id", None)
 
-    empresas = listar_empresas()
+    empresas = _cache_empresas()
 
     tab_timeline, tab_painel, tab_nova = st.tabs([
         "📜 Timeline por empresa",
@@ -4881,7 +4938,7 @@ def pagina_tarefas_gestta():
 
         st.caption(f"{len(tarefas)} tarefa(s).")
 
-        empresas_cache = {e["id"]: e for e in listar_empresas()}
+        empresas_cache = {e["id"]: e for e in _cache_empresas()}
         protocolos_cache = listar_todos_protocolos()
 
         for t in tarefas:
@@ -5101,7 +5158,7 @@ def pagina_pendencias():
 
     # ===================== Aba: Lista =====================
     with tab_lista:
-        empresas_cache = listar_empresas()
+        empresas_cache = _cache_empresas()
         opc_emp = [(0, "— todas —")] + [(e["id"], e["razao_social"])
                                          for e in empresas_cache]
 
@@ -5326,7 +5383,7 @@ def pagina_pendencias():
         # ---------- Modo 2: Empresa cadastrada ----------
         elif modo.startswith("🏢"):
             with st.container(border=True):
-                empresas = listar_empresas()
+                empresas = _cache_empresas()
                 if not empresas:
                     st.warning(
                         "Nenhuma empresa cadastrada ainda. Use outro modo "
@@ -6238,6 +6295,162 @@ def pagina_configuracoes():
                 "configure a variável `DATABASE_URL` com o Postgres do "
                 "Supabase."
             )
+
+    # ---- Meu Telegram (alertas chegam pro seu Telegram pessoal) ----
+    with st.container(border=True):
+        st.markdown("### 📲 Meu Telegram (alertas pessoais)")
+        st.caption(
+            "Cadastre o **seu** chat_id pra que os lembretes diários "
+            "(10h e 15h) cheguem no SEU Telegram, não no do admin. "
+            "Cada usuário que se cadastra aqui recebe a própria cópia "
+            "dos alertas."
+        )
+        from auth import usuario_atual as _u_atual
+        _u = _u_atual() or {}
+        _meu_email = _u.get("email") or ""
+
+        if not _meu_email or _u.get("_dev"):
+            st.info(
+                "Faça login com sua conta real (em produção) pra "
+                "configurar o Telegram pessoal."
+            )
+        else:
+            try:
+                from database import (
+                    buscar_telegram_usuario as _btu,
+                    definir_telegram_usuario as _dtu,
+                    desativar_telegram_usuario as _desat,
+                )
+                _atual = _btu(_meu_email)
+            except Exception as exc:
+                st.error(f"Erro ao ler config: {exc}")
+                _atual = None
+
+            if _atual and _atual.get("ativo") and _atual.get("chat_id"):
+                st.success(
+                    f"✅ Você está recebendo alertas no chat_id "
+                    f"**{_atual['chat_id']}**"
+                )
+            elif _atual and not _atual.get("ativo"):
+                st.warning(
+                    "⏸️ Alertas pausados. Reative abaixo se quiser "
+                    "voltar a receber."
+                )
+            else:
+                st.info(
+                    "ℹ️ Você ainda não cadastrou um chat_id. "
+                    "Sem isso, os alertas do bot continuam indo só "
+                    "pro admin."
+                )
+
+            with st.expander(
+                "🧭 Como descobrir meu chat_id (passo a passo)",
+                expanded=not _atual,
+            ):
+                st.markdown(
+                    "1. Abra o Telegram e procure o bot "
+                    "`@redesim_csm_bot` (ou o bot da CSM que o admin "
+                    "configurou).  \n"
+                    "2. Clique **Iniciar** / mande qualquer mensagem "
+                    "(ex.: `oi`).  \n"
+                    "3. Abra esta URL no navegador "
+                    "(substitua `<SEU_TOKEN>` pelo do bot — peça ao "
+                    "admin):  \n"
+                    "    `https://api.telegram.org/bot<SEU_TOKEN>/"
+                    "getUpdates`  \n"
+                    "4. Procure o número em `\"chat\":{\"id\": ...}` — "
+                    "esse é o seu **chat_id** (geralmente 9-10 dígitos). "
+                    "Cole abaixo."
+                )
+
+            _novo_chat = st.text_input(
+                "Meu chat_id",
+                value=(_atual or {}).get("chat_id", "") or "",
+                placeholder="Ex.: 1009247169",
+                help=(
+                    "Número do seu chat privado com o bot. "
+                    "Não compartilhe com ninguém."
+                ),
+                key="meu_telegram_chat_id",
+            )
+            c1, c2, c3 = st.columns([2, 1, 1])
+            with c1:
+                if st.button(
+                    "💾 Salvar e testar",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_salvar_telegram_pessoal",
+                ):
+                    if not _novo_chat.strip():
+                        st.warning("Cole o seu chat_id antes de salvar.")
+                    else:
+                        try:
+                            _dtu(
+                                _meu_email,
+                                _novo_chat.strip(),
+                                nome=_u.get("nome"),
+                                ativo=True,
+                            )
+                            # Manda mensagem de teste
+                            from utils.notifier import enviar_telegram
+                            _ok, _err = enviar_telegram(
+                                f"✅ Olá {_u.get('nome') or _u.get('email')}!"
+                                f"\n\nSeu Telegram foi configurado com "
+                                f"sucesso no REDESIM Manager. "
+                                f"A partir de agora você recebe os "
+                                f"lembretes diários (10h e 15h) "
+                                f"diretamente aqui.",
+                                chat_id=_novo_chat.strip(),
+                            )
+                            if _ok:
+                                st.success(
+                                    "✅ Salvo e mensagem de teste "
+                                    "enviada! Confira seu Telegram."
+                                )
+                            else:
+                                st.warning(
+                                    f"Chat_id salvo mas o envio de "
+                                    f"teste falhou: {_err}. Verifique "
+                                    f"se o número está correto e se "
+                                    f"você iniciou conversa com o bot."
+                                )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro ao salvar: {exc}")
+            with c2:
+                if _atual and _atual.get("ativo"):
+                    if st.button(
+                        "⏸️ Pausar",
+                        use_container_width=True,
+                        key="btn_pausar_telegram_pessoal",
+                    ):
+                        try:
+                            _desat(_meu_email)
+                            st.info("Alertas pessoais pausados.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro: {exc}")
+            with c3:
+                # Lista de quem está recebendo (visível pra todos
+                # pra dar transparência sobre quem está no broadcast)
+                try:
+                    from database import listar_telegrams_ativos as _lta
+                    _ativos = _lta()
+                    if _ativos:
+                        with st.popover(
+                            f"👥 {len(_ativos)} ativo(s)",
+                            use_container_width=True,
+                        ):
+                            for d in _ativos:
+                                marca = "👤"
+                                if d["email"] == _meu_email:
+                                    marca = "🫵"
+                                st.write(
+                                    f"{marca} {d.get('nome') or d['email']} "
+                                    f"`(chat {d['chat_id']})`"
+                                )
+                except Exception:
+                    pass
 
     # ---- JWT do GESTTA ----
     with st.container(border=True):

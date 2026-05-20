@@ -498,6 +498,19 @@ DDL = [
         observacao_admin TEXT
     );
     """,
+    # Telegram por usuário: cada usuário registrado pode informar o
+    # próprio chat_id pra receber os alertas no Telegram dele em vez
+    # de chegarem todos no admin.
+    """
+    CREATE TABLE IF NOT EXISTS usuarios_telegram (
+        email      TEXT PRIMARY KEY,
+        chat_id    TEXT NOT NULL,
+        nome       TEXT,
+        ativo      INTEGER NOT NULL DEFAULT 1,
+        criado_em  TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
     """
     CREATE TABLE IF NOT EXISTS cnae_verificacao (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3168,6 +3181,86 @@ def contar_solicitacoes_pendentes() -> int:
             "WHERE status = 'pendente'"
         ).fetchone()
         return int(dict(r)["c"]) if r else 0
+
+
+# ====================================================================
+# Telegram por usuário
+# ====================================================================
+def definir_telegram_usuario(
+    email: str, chat_id: str, *, nome: str | None = None,
+    ativo: bool = True,
+) -> None:
+    """Upsert do chat_id do Telegram para o email do usuário logado.
+
+    Se o usuário já existir, atualiza chat_id/nome/ativo.
+    O `email` é a chave primária e bate com o email do Supabase Auth.
+    """
+    email = (email or "").strip().lower()
+    chat_id = (chat_id or "").strip()
+    if not email or not chat_id:
+        raise ValueError("Email e chat_id são obrigatórios.")
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT email FROM usuarios_telegram WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                """UPDATE usuarios_telegram SET
+                       chat_id = ?,
+                       nome = COALESCE(?, nome),
+                       ativo = ?,
+                       atualizado_em = datetime('now', 'localtime')
+                     WHERE email = ?""",
+                (chat_id, nome, 1 if ativo else 0, email),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO usuarios_telegram
+                     (email, chat_id, nome, ativo)
+                     VALUES (?, ?, ?, ?)""",
+                (email, chat_id, nome, 1 if ativo else 0),
+            )
+
+
+def buscar_telegram_usuario(email: str) -> dict | None:
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM usuarios_telegram WHERE email = ?",
+            (email,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def desativar_telegram_usuario(email: str) -> None:
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE usuarios_telegram SET ativo = 0, "
+            "atualizado_em = datetime('now', 'localtime') "
+            "WHERE email = ?",
+            (email,),
+        )
+
+
+def listar_telegrams_ativos() -> list[dict]:
+    """Devolve a lista de usuários ativos com chat_id configurado.
+
+    Usado pelo notifier pra fazer broadcast: cada usuário ativo recebe
+    os alertas no Telegram dele.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT email, chat_id, nome FROM usuarios_telegram "
+            "WHERE ativo = 1 AND chat_id IS NOT NULL AND chat_id <> '' "
+            "ORDER BY email"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def listar_conselhos_cnae(cnae: str) -> list[dict]:

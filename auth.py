@@ -12,6 +12,11 @@ Em PROD:
   - Criar conta: salva solicitação na tabela `solicitacoes_cadastro`
     (Eduardo aprova depois pelo painel ⚙️ Configurações)
   - Recuperação: envia link via Supabase
+
+"Mantenha me conectado":
+  - Salva o `refresh_token` do Supabase num cookie (30 dias)
+  - No carregamento do app, tenta restaurar a sessão usando o refresh_token
+  - Se válido, loga automaticamente — F5 não derruba mais o usuário
 """
 from __future__ import annotations
 
@@ -28,6 +33,11 @@ except ImportError:
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
+
+# Nome do cookie que guarda o refresh_token do Supabase.
+# Duração: 30 dias (Supabase regenera o refresh_token a cada uso).
+_COOKIE_REFRESH = "redesim_refresh_token"
+_COOKIE_MAX_AGE_DIAS = 30
 
 
 def _supabase_disponivel() -> bool:
@@ -49,6 +59,101 @@ def _get_client():
 
 
 # ====================================================================
+# Cookie controller (silencioso se a lib não estiver instalada)
+# ====================================================================
+def _get_cookies():
+    """Retorna o controller de cookies ou None se a lib não existir."""
+    if "_cookies_ctrl" in st.session_state:
+        return st.session_state["_cookies_ctrl"]
+    try:
+        from streamlit_cookies_controller import CookieController
+        ctrl = CookieController(key="redesim_cookies")
+        st.session_state["_cookies_ctrl"] = ctrl
+        return ctrl
+    except Exception:
+        # Lib não instalada → desativa o "mantenha me conectado"
+        # graciosamente; login simplesmente exige email/senha a cada F5.
+        return None
+
+
+def _salvar_refresh_token(token: str) -> None:
+    """Persiste o refresh_token no cookie (válido 30d)."""
+    ctrl = _get_cookies()
+    if ctrl is None or not token:
+        return
+    try:
+        from datetime import datetime, timedelta
+        ctrl.set(
+            _COOKIE_REFRESH, token,
+            expires=datetime.utcnow() + timedelta(days=_COOKIE_MAX_AGE_DIAS),
+            secure=True,
+            same_site="lax",
+        )
+    except Exception:
+        # Não bloqueia o login se o cookie falhar
+        pass
+
+
+def _ler_refresh_token() -> Optional[str]:
+    ctrl = _get_cookies()
+    if ctrl is None:
+        return None
+    try:
+        return ctrl.get(_COOKIE_REFRESH)
+    except Exception:
+        return None
+
+
+def _limpar_refresh_token() -> None:
+    ctrl = _get_cookies()
+    if ctrl is None:
+        return
+    try:
+        ctrl.remove(_COOKIE_REFRESH)
+    except Exception:
+        pass
+
+
+def _restaurar_sessao_via_cookie() -> Optional[dict]:
+    """Tenta logar usando o refresh_token persistido. Retorna o user ou None."""
+    if not _supabase_disponivel():
+        return None
+    if "auth_user" in st.session_state:
+        # Já logado — nada a fazer
+        return st.session_state["auth_user"]
+
+    refresh = _ler_refresh_token()
+    if not refresh:
+        return None
+
+    try:
+        cli = _get_client()
+        # set_session aceita um refresh_token e devolve um access novo
+        resp = cli.auth.set_session(
+            access_token="dummy",  # ignorado quando refresh é válido
+            refresh_token=refresh,
+        )
+        user = resp.user
+        sess = resp.session
+        if not user:
+            return None
+        st.session_state["auth_user"] = {
+            "id": user.id,
+            "email": user.email,
+            "nome": (user.user_metadata or {}).get(
+                "full_name", user.email),
+        }
+        # Atualiza o cookie com o NOVO refresh_token (rotação)
+        if sess and getattr(sess, "refresh_token", None):
+            _salvar_refresh_token(sess.refresh_token)
+        return st.session_state["auth_user"]
+    except Exception:
+        # Token inválido/expirado → limpa o cookie e força login manual
+        _limpar_refresh_token()
+        return None
+
+
+# ====================================================================
 # API pública
 # ====================================================================
 def usuario_atual() -> Optional[dict]:
@@ -59,6 +164,10 @@ def usuario_atual() -> Optional[dict]:
 def exigir_login() -> dict:
     """Bloqueia o app até o usuário logar.
     Em DEV (sem Supabase configurado) retorna um usuário fake.
+
+    Antes de mostrar a tela de login, tenta restaurar a sessão
+    usando o refresh_token salvo em cookie (para que F5 não derrube
+    o usuário).
     """
     if not _supabase_disponivel():
         return {
@@ -72,17 +181,23 @@ def exigir_login() -> dict:
     if user:
         return user
 
+    # Tenta autologin via cookie ANTES de bloquear com tela de login
+    restaurado = _restaurar_sessao_via_cookie()
+    if restaurado:
+        return restaurado
+
     _renderizar_tela_login()
     st.stop()
 
 
 def logout():
-    """Faz logout do Supabase e limpa a sessão."""
+    """Faz logout do Supabase, limpa o cookie e a sessão."""
     if _supabase_disponivel():
         try:
             _get_client().auth.sign_out()
         except Exception:
             pass
+    _limpar_refresh_token()
     for k in ("auth_user", "_supabase_client"):
         st.session_state.pop(k, None)
     st.rerun()
@@ -95,6 +210,7 @@ def _acao_login():
     """Executa login. Lê estado de st.session_state e atualiza."""
     email = (st.session_state.get("login_email") or "").strip()
     senha = st.session_state.get("login_senha") or ""
+    manter = st.session_state.get("login_manter_conectado", True)
     if not email or not senha:
         st.session_state["_login_msg"] = ("error", "Preencha email e senha.")
         return
@@ -104,6 +220,7 @@ def _acao_login():
             "email": email, "password": senha,
         })
         user = resp.user
+        sess = resp.session
         if user:
             st.session_state["auth_user"] = {
                 "id": user.id,
@@ -111,6 +228,10 @@ def _acao_login():
                 "nome": (user.user_metadata or {}).get(
                     "full_name", user.email),
             }
+            # Se o checkbox "mantenha me conectado" está marcado,
+            # salva o refresh_token no cookie (vale 30 dias).
+            if manter and sess and getattr(sess, "refresh_token", None):
+                _salvar_refresh_token(sess.refresh_token)
             # Limpa campos
             st.session_state.pop("login_email", None)
             st.session_state.pop("login_senha", None)
@@ -263,6 +384,15 @@ def _renderizar_tela_login():
         )
         st.text_input(
             "Senha", type="password", key="login_senha",
+        )
+        st.checkbox(
+            "🔒 Mantenha me conectado (não pede senha por 30 dias)",
+            key="login_manter_conectado",
+            value=True,
+            help=(
+                "Salva uma credencial segura no navegador (refresh "
+                "token). Desmarque se estiver num computador público."
+            ),
         )
         st.button(
             "Entrar", type="primary", use_container_width=True,

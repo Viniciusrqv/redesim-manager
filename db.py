@@ -216,7 +216,12 @@ _PG_POOL = None  # connection pool global (criado sob demanda)
 def _get_pool():
     """Cria/retorna o pool de conexões Postgres. Cada request reusa
     uma conexão existente em vez de abrir/fechar (que custa ~100ms
-    cada vez por causa de TLS + autenticação)."""
+    cada vez por causa de TLS + autenticação).
+
+    Adicionei keepalives porque o Supabase Pooler (PgBouncer) corta
+    conexões ociosas após ~5min e isso fazia o primeiro clique
+    depois de um café demorar uns 2-3s no Streamlit Cloud.
+    """
     global _PG_POOL
     if _PG_POOL is None:
         from psycopg2.pool import ThreadedConnectionPool
@@ -224,6 +229,17 @@ def _get_pool():
             minconn=1, maxconn=10,
             dsn=DATABASE_URL,
             cursor_factory=psycopg2.extras.RealDictCursor,
+            # TCP keepalive — manda probe a cada 60s, e considera
+            # conexão morta após 3 falhas a cada 10s (≈ 90s).
+            keepalives=1,
+            keepalives_idle=60,
+            keepalives_interval=10,
+            keepalives_count=3,
+            # Timeout pra detectar conexão zumbi rápido
+            connect_timeout=10,
+            # Reaproveita prepared statements (PgBouncer transaction
+            # mode não suporta, mas via SET é OK)
+            application_name="redesim_manager",
         )
     return _PG_POOL
 
@@ -236,12 +252,26 @@ class _PgConn:
     """
     def __init__(self, dsn: str):
         pool = _get_pool()
-        self._conn = pool.getconn()
-        # Garante que a conexão pegada não está num estado ruim
-        try:
-            self._conn.rollback()
-        except Exception:
-            pass
+        self._conn = None
+        # Tenta até 2 vezes — se a conexão do pool estiver morta
+        # (PgBouncer cortou), descarta e pega outra.
+        for tentativa in range(2):
+            conn = pool.getconn()
+            try:
+                conn.rollback()
+                # Ping rápido pra confirmar que tá viva
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                self._conn = conn
+                break
+            except Exception:
+                # Conexão morta: descarta do pool e tenta de novo
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                if tentativa == 1:
+                    raise
 
     # Context manager
     def __enter__(self):
