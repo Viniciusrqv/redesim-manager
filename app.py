@@ -130,6 +130,31 @@ st.markdown(
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
+      /* ===== Esconde elementos do Streamlit Cloud no header ===== */
+      /* Esconde "Share", "Star", "Edit", GitHub, menu ⋮, "Manage app" */
+      [data-testid="stToolbar"],
+      [data-testid="stDecoration"],
+      [data-testid="stStatusWidget"],
+      header[data-testid="stHeader"] {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+      }
+      /* Esconde footer "Hosted with Streamlit" */
+      footer { display: none !important; }
+      /* Esconde o botão flutuante "Manage app" no canto inferior */
+      .viewerBadge_container__1QSob,
+      .styles_viewerBadge__1yB5_,
+      .viewerBadge_link__1S137,
+      .viewerBadge_text__1JaDK,
+      a[href*="streamlit.io/cloud"],
+      [data-testid="manage-app-button"] {
+        display: none !important;
+      }
+      /* Compensa o espaço removido do header */
+      .stApp { padding-top: 0 !important; }
+      .main .block-container { padding-top: 2rem !important; }
+
       /* ===== Tipografia base ===== */
       html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont,
