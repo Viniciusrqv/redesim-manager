@@ -56,7 +56,7 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
   text-transform: uppercase;
   letter-spacing: .6px;
   font-weight: 600;
-  color: #6B7280 !important;
+  color: #000000 !important;
   margin-bottom: 4px;
 }
 .kpi-value {
@@ -69,7 +69,7 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
   font-size: 12px;
   margin-top: 6px;
   font-weight: 400;
-  color: #6B7280 !important;
+  color: #000000 !important;
 }
 
 /* ----- Mini-card por categoria ----- */
@@ -85,10 +85,10 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
 .mini-card * { color: #1A2A4A !important; }
 .mini-card .mc-icon {
   font-size: 18px;
-  color: #6B7280 !important;
+  color: #000000 !important;
 }
 .mini-card .mc-label {
-  font-size: 11px; font-weight: 600; color: #6B7280 !important;
+  font-size: 11px; font-weight: 600; color: #000000 !important;
   margin: 4px 0 6px;
   text-transform: uppercase; letter-spacing: .5px;
 }
@@ -98,7 +98,7 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
 }
 .mini-card .mc-sub {
   font-size: 11px; margin-top: 4px; font-weight: 500;
-  color: #6B7280 !important;
+  color: #000000 !important;
 }
 .mini-card.crit {
   border-color: #FECACA;
@@ -127,7 +127,7 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
 .health-g { background: #047857; }
 .health-legend {
   font-size: 12px; display: flex; gap: 18px;
-  font-weight: 500; color: #6B7280;
+  font-weight: 500; color: #000000;
 }
 
 /* ----- Header de bloco ----- */
@@ -147,7 +147,7 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
 .cnae-header .cnae-label {
   font-size: 12px !important; font-weight: 600;
   text-transform: uppercase; letter-spacing: .6px;
-  color: #6B7280 !important;
+  color: #000000 !important;
 }
 .cnae-header .cnae-codigo {
   font-size: 28px; font-weight: 600; line-height: 1.1;
@@ -156,7 +156,7 @@ html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
 }
 .cnae-header .cnae-desc {
   font-size: 15px; line-height: 1.5; font-weight: 400;
-  color: #4B5563 !important;
+  color: #000000 !important;
 }
 .cnae-header .cnae-badge {
   display: inline-block; margin-top: 14px;
@@ -177,7 +177,7 @@ section[data-testid="stSidebar"] [role="radiogroup"] label,
 section[data-testid="stSidebar"] [role="radiogroup"] label * {
   font-size: 14px !important;
   line-height: 1.5 !important;
-  color: #4B5563 !important;
+  color: #000000 !important;
 }
 section[data-testid="stSidebar"] [role="radiogroup"] label {
   padding: 6px 4px !important;
@@ -222,17 +222,17 @@ section[data-testid="stSidebar"] .stMarkdown h1 {
 .card-area-badge * { color: #FFFFFF !important; }
 .card-area-body {
   font-size: 13px; line-height: 1.55;
-  color: #4B5563 !important;
+  color: #000000 !important;
 }
-.card-area-body i { color: #6B7280 !important; font-style: italic; }
+.card-area-body i { color: #000000 !important; font-style: italic; }
 .card-area-fonte {
   font-size: 11px;
   margin-top: 10px;
   border-top: 1px solid #E5E9F2;
   padding-top: 7px;
-  color: #6B7280 !important;
+  color: #000000 !important;
 }
-.card-area-fonte * { color: #6B7280 !important; }
+.card-area-fonte * { color: #000000 !important; }
 
 /* ----- Botoes nativos do Streamlit, refinados ----- */
 .stButton > button {
@@ -267,3 +267,31 @@ a:hover { color: #1A41B3; }
   border-color: #E5E9F2 !important;
   border-radius: 8px;
 }
+
+/* ----- Forca preto em todos os textos cinzas do Streamlit ----- */
+/* st.caption() renderiza em cinza claro por padrao - escurece */
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] *,
+[data-testid="stCaptionContainer"] p,
+.stCaption,
+.stCaption * {
+  color: #1A2A4A !important;
+}
+/* Texto pequeno em helpers, footers de metric, etc */
+small, .small, [class*="caption"] {
+  color: #1A2A4A !important;
+}
+/* Help text (a interrogacao ao lado de inputs) tambem fica mais escuro */
+[data-baseweb="tooltip"] {
+  color: #1A2A4A !important;
+}
+/* Texto dentro de st.metric */
+[data-testid="stMetricLabel"],
+[data-testid="stMetricLabel"] * {
+  color: #1A2A4A !important;
+}
+/* Texto generico de paragrafo */
+.stMarkdown p, .stMarkdown li {
+  color: #1A2A4A;
+}
+

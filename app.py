@@ -611,13 +611,12 @@ def _resumo_consolidado_dashboard():
                 )
                 .properties(height=300)
             )
-            # Texto central com total — branco pra ficar legível no dark mode
+            # Texto central com total — preto sólido (sem mais "vazado")
             total_txt = alt.Chart(pd.DataFrame({"v": [total_itens]})).mark_text(
-                fontSize=42, fontWeight="bold", color="#FFFFFF",
-                stroke="#000000", strokeWidth=0.5,
+                fontSize=42, fontWeight="bold", color="#000000",
             ).encode(text="v:Q")
             sub_txt = alt.Chart(pd.DataFrame({"v": ["itens abertos"]})).mark_text(
-                fontSize=14, fontWeight="bold", color="#E5E7EB", dy=28,
+                fontSize=14, fontWeight="bold", color="#000000", dy=28,
             ).encode(text="v:N")
             st.altair_chart(donut + total_txt + sub_txt, use_container_width=True)
         else:
