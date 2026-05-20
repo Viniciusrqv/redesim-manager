@@ -511,6 +511,23 @@ DDL = [
         atualizado_em TEXT DEFAULT (datetime('now', 'localtime'))
     );
     """,
+    # GESTTA JWT por usuário: cada usuário do REDESIM Manager pode
+    # vincular o JWT do PRÓPRIO usuário GESTTA. Isso permite que
+    # buscas/comentários no GESTTA respeitem as permissões da pessoa
+    # logada, e que cada um veja "as próprias tarefas".
+    # Cai pro GESTTA_JWT global (env) como fallback.
+    """
+    CREATE TABLE IF NOT EXISTS usuarios_gestta_jwt (
+        email         TEXT PRIMARY KEY,
+        jwt           TEXT NOT NULL,
+        nome          TEXT,
+        gestta_user   TEXT,
+        gestta_company TEXT,
+        ativo         INTEGER NOT NULL DEFAULT 1,
+        criado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_em TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """,
     """
     CREATE TABLE IF NOT EXISTS cnae_verificacao (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3261,6 +3278,123 @@ def listar_telegrams_ativos() -> list[dict]:
             "ORDER BY email"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ====================================================================
+# GESTTA JWT por usuário
+# ====================================================================
+def definir_gestta_jwt_usuario(
+    email: str, jwt: str, *,
+    nome: str | None = None,
+    gestta_user: str | None = None,
+    gestta_company: str | None = None,
+    ativo: bool = True,
+) -> None:
+    """Upsert do JWT GESTTA para o email do usuário logado.
+
+    O `email` é a chave primária e bate com o email do Supabase Auth.
+    Os campos `gestta_user`/`gestta_company` são metadados extraídos do
+    payload do JWT (via jwt_info), úteis pra mostrar na UI quem é a
+    pessoa "dentro do GESTTA" sem decodificar de novo.
+    """
+    email = (email or "").strip().lower()
+    jwt = (jwt or "").strip()
+    if not email or not jwt:
+        raise ValueError("Email e JWT são obrigatórios.")
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT email FROM usuarios_gestta_jwt WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                """UPDATE usuarios_gestta_jwt SET
+                       jwt = ?,
+                       nome = COALESCE(?, nome),
+                       gestta_user = COALESCE(?, gestta_user),
+                       gestta_company = COALESCE(?, gestta_company),
+                       ativo = ?,
+                       atualizado_em = datetime('now', 'localtime')
+                     WHERE email = ?""",
+                (jwt, nome, gestta_user, gestta_company,
+                 1 if ativo else 0, email),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO usuarios_gestta_jwt
+                     (email, jwt, nome, gestta_user, gestta_company, ativo)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                (email, jwt, nome, gestta_user, gestta_company,
+                 1 if ativo else 0),
+            )
+
+
+def buscar_gestta_jwt_usuario(email: str) -> dict | None:
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM usuarios_gestta_jwt WHERE email = ?",
+            (email,),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def desativar_gestta_jwt_usuario(email: str) -> None:
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE usuarios_gestta_jwt SET ativo = 0, "
+            "atualizado_em = datetime('now', 'localtime') "
+            "WHERE email = ?",
+            (email,),
+        )
+
+
+def listar_jwts_gestta_ativos() -> list[dict]:
+    """Lista todos os JWTs ativos. Usado pra mostrar no painel quem
+    está com GESTTA pessoal configurado."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT email, nome, gestta_user, gestta_company, "
+            "atualizado_em FROM usuarios_gestta_jwt "
+            "WHERE ativo = 1 ORDER BY email"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def obter_jwt_gestta_efetivo(email: str | None = None) -> str:
+    """Devolve o JWT GESTTA mais apropriado.
+
+    Ordem de preferência:
+      1. JWT pessoal do `email` (se ativo) — uso interativo no app
+      2. Override de sessão (st.session_state["GESTTA_JWT_OVERRIDE"]) —
+         útil quando o admin cola um token novo na UI sem alterar segredo
+      3. Variável de ambiente GESTTA_JWT — fallback (cron diário)
+
+    Retorna string vazia se nada estiver configurado.
+    """
+    # 1) JWT pessoal
+    if email:
+        u = buscar_gestta_jwt_usuario(email)
+        if u and u.get("ativo") and (u.get("jwt") or "").strip():
+            return u["jwt"].strip()
+
+    # 2) Override de sessão (Streamlit)
+    try:
+        import streamlit as st
+        ov = (st.session_state.get("GESTTA_JWT_OVERRIDE") or "").strip()
+        if ov:
+            return ov
+    except Exception:
+        pass
+
+    # 3) Variável de ambiente
+    import os as _os
+    return (_os.getenv("GESTTA_JWT") or "").strip()
 
 
 def listar_conselhos_cnae(cnae: str) -> list[dict]:

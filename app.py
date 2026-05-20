@@ -4731,16 +4731,23 @@ def _salvar_anotacao_e_replicar(
         texto = "(sem texto)"
     aid = adicionar_anotacao_local_gestta(gestta_id, texto, tipo=tipo)
 
-    if not gestta_configurado():
+    # JWT efetivo: prioriza o JWT pessoal do usuário logado, cai pro
+    # global se ele ainda não cadastrou o próprio.
+    from database import obter_jwt_gestta_efetivo
+    from auth import usuario_atual as _u_at
+    _u = _u_at() or {}
+    _jwt_eff = obter_jwt_gestta_efetivo(_u.get("email"))
+
+    if not _jwt_eff:
         marcar_anotacao_replicada(
             aid, sucesso=False,
-            erro="GESTTA_JWT não configurado no .env",
+            erro="Nenhum JWT GESTTA configurado (nem pessoal nem global).",
         )
         return
 
     try:
         from utils.gestta_api import GesttaClient
-        cli = GesttaClient(GESTTA_JWT)
+        cli = GesttaClient(_jwt_eff)
         cli.adicionar_comentario_tarefa(
             gestta_id, texto, external=external,
         )
@@ -6452,13 +6459,195 @@ def pagina_configuracoes():
                 except Exception:
                     pass
 
-    # ---- JWT do GESTTA ----
+    # ---- Meu GESTTA (JWT pessoal — cada usuário vincula o seu) ----
     with st.container(border=True):
-        st.markdown("### 🔑 Token GESTTA (JWT)")
+        st.markdown("### 🔑 Meu GESTTA (JWT pessoal)")
         st.caption(
-            "O token vence a cada ~24 horas. Quando o app começar a "
-            "retornar erro **401** ao buscar tarefas, atualize o token "
-            "aqui."
+            "Cole AQUI o JWT do **seu** usuário GESTTA. Assim quando "
+            "você navega no app, as buscas e os comentários no GESTTA "
+            "vão pela sua conta — respeitando suas permissões e "
+            "aparecendo com seu nome no histórico das tarefas. Se você "
+            "não cadastrar, o app cai no JWT global (do admin)."
+        )
+        from auth import usuario_atual as _u_at
+        from utils.gestta_api import jwt_info as _jinfo
+        from database import (
+            definir_gestta_jwt_usuario as _set_jwt,
+            buscar_gestta_jwt_usuario as _get_jwt,
+            desativar_gestta_jwt_usuario as _desat_jwt,
+            listar_jwts_gestta_ativos as _lst_jwts,
+        )
+        _u = _u_at() or {}
+        _meu_email = _u.get("email") or ""
+
+        if not _meu_email or _u.get("_dev"):
+            st.info(
+                "Faça login com sua conta real (em produção) pra "
+                "configurar o GESTTA pessoal."
+            )
+        else:
+            try:
+                _rec = _get_jwt(_meu_email)
+            except Exception as exc:
+                st.error(f"Erro ao ler config: {exc}")
+                _rec = None
+
+            if _rec and _rec.get("ativo") and _rec.get("jwt"):
+                _info_atual = _jinfo(_rec["jwt"])
+                _cor = "🟢"
+                if _info_atual.get("expirado"):
+                    _cor = "🔴"
+                elif (_info_atual.get("horas_restantes") or 0) < 6:
+                    _cor = "🟡"
+                _status_txt = (
+                    "expirado" if _info_atual.get("expirado") else "ativo"
+                )
+                st.markdown(
+                    f"**Status:** {_cor} {_status_txt} · "
+                    f"expira em "
+                    f"**{_info_atual.get('horas_restantes', '—')}h**"
+                )
+                st.caption(
+                    f"GESTTA: `{_rec.get('gestta_user') or '—'}` · "
+                    f"Empresa: `{_rec.get('gestta_company') or '—'}` · "
+                    f"Atualizado: `{_rec.get('atualizado_em') or '—'}`"
+                )
+            elif _rec and not _rec.get("ativo"):
+                st.warning(
+                    "⏸️ Seu JWT pessoal está pausado — o app está "
+                    "usando o JWT global (do admin). Reative abaixo se "
+                    "quiser voltar a usar o seu."
+                )
+            else:
+                st.info(
+                    "ℹ️ Você ainda não cadastrou um JWT pessoal. "
+                    "O app está usando o JWT global (do admin) — "
+                    "que pode estar mostrando tarefas que não são suas."
+                )
+
+            with st.expander(
+                "🧭 Como pegar meu JWT GESTTA (passo a passo)",
+                expanded=not _rec,
+            ):
+                st.markdown(
+                    "1. Abra `https://app.gestta.com.br` e faça login "
+                    "com **sua** conta GESTTA.  \n"
+                    "2. Aperte **F12** pra abrir o DevTools.  \n"
+                    "3. Aba **Application** → **Local Storage** → "
+                    "`https://app.gestta.com.br`.  \n"
+                    "4. Procure a chave **`ngStorage-jwt`** e clique "
+                    "duas vezes pra ver o valor.  \n"
+                    "5. Copie o conteúdo SEM as aspas externas (começa "
+                    "com `JWT eyJ...`).  \n"
+                    "6. Cole aqui em baixo e clique **Salvar e testar**."
+                )
+
+            _novo_jwt_pess = st.text_area(
+                "Meu JWT GESTTA",
+                value="",
+                placeholder="JWT eyJhbGciOi...",
+                height=100,
+                help=(
+                    "Cole o JWT do SEU usuário GESTTA. Vale ~24h — "
+                    "renove quando o app der erro 401."
+                ),
+                key="meu_gestta_jwt_input",
+            )
+            cc1, cc2, cc3 = st.columns([2, 1, 1])
+            with cc1:
+                if st.button(
+                    "💾 Salvar e testar",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_salvar_gestta_pessoal",
+                ):
+                    _jwt_strip = (_novo_jwt_pess or "").strip()
+                    if not _jwt_strip:
+                        st.warning("Cole o JWT antes de salvar.")
+                    else:
+                        # Valida formato + extrai dados
+                        try:
+                            _info_novo = _jinfo(_jwt_strip)
+                        except Exception as exc:
+                            st.error(
+                                f"JWT inválido (não consegui decodificar): "
+                                f"{exc}"
+                            )
+                            _info_novo = None
+
+                        if _info_novo and _info_novo.get("valido"):
+                            if _info_novo.get("expirado"):
+                                st.warning(
+                                    "⚠️ Esse JWT já está expirado. "
+                                    "Gere um novo no GESTTA."
+                                )
+                            try:
+                                _set_jwt(
+                                    _meu_email,
+                                    _jwt_strip,
+                                    nome=_u.get("nome"),
+                                    gestta_user=_info_novo.get("user_name"),
+                                    gestta_company=_info_novo.get("company"),
+                                    ativo=True,
+                                )
+                                st.success(
+                                    f"✅ Salvo! GESTTA `"
+                                    f"{_info_novo.get('user_name') or '—'}` "
+                                    f"· expira em "
+                                    f"{_info_novo.get('horas_restantes', '—')}h."
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Erro ao salvar: {exc}")
+                        elif _info_novo is not None:
+                            st.error(
+                                "JWT mal formado — esperado um token "
+                                "começando com `JWT eyJ...`."
+                            )
+            with cc2:
+                if _rec and _rec.get("ativo"):
+                    if st.button(
+                        "⏸️ Pausar",
+                        use_container_width=True,
+                        key="btn_pausar_gestta_pessoal",
+                    ):
+                        try:
+                            _desat_jwt(_meu_email)
+                            st.info(
+                                "JWT pessoal pausado. O app voltou pro "
+                                "JWT global (admin)."
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro: {exc}")
+            with cc3:
+                try:
+                    _ativos_g = _lst_jwts()
+                    if _ativos_g:
+                        with st.popover(
+                            f"👥 {len(_ativos_g)} pessoa(s)",
+                            use_container_width=True,
+                        ):
+                            for d in _ativos_g:
+                                marca = "👤"
+                                if d["email"] == _meu_email:
+                                    marca = "🫵"
+                                st.write(
+                                    f"{marca} {d.get('nome') or d['email']} "
+                                    f"→ GESTTA: "
+                                    f"`{d.get('gestta_user') or '—'}`"
+                                )
+                except Exception:
+                    pass
+
+    # ---- JWT GLOBAL do GESTTA (fallback / admin) ----
+    with st.container(border=True):
+        st.markdown("### 🔑 Token GESTTA global (fallback)")
+        st.caption(
+            "Token de fallback usado quando nenhum usuário tem JWT "
+            "pessoal configurado — e pelo cron diário do GitHub Actions "
+            "(que não tem usuário logado). Mantenha um JWT válido aqui "
+            "como segurança. Vence em ~24h."
         )
         try:
             from utils.gestta_api import jwt_info
