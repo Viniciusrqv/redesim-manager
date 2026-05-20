@@ -317,10 +317,17 @@ class _PgConn:
         self._conn.rollback()
 
     def close(self):
+        """Devolve a conexão ao pool (não fecha de verdade).
+        Isso é o que torna o app rápido — reutiliza TLS/auth."""
         try:
-            self._conn.close()
+            pool = _get_pool()
+            pool.putconn(self._conn)
         except Exception:
-            pass
+            # Fallback: se algo deu errado com o pool, fecha de verdade
+            try:
+                self._conn.close()
+            except Exception:
+                pass
 
     @property
     def row_factory(self):

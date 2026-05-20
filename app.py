@@ -138,282 +138,26 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    """
-    <style>
-      /* ===== Esconde elementos do Streamlit Cloud no header ===== */
-      /* Esconde "Share", "Star", "Edit", GitHub, menu ⋮, "Manage app" */
-      [data-testid="stToolbar"],
-      [data-testid="stDecoration"],
-      [data-testid="stStatusWidget"],
-      header[data-testid="stHeader"] {
-        display: none !important;
-        visibility: hidden !important;
-        height: 0 !important;
-      }
-      /* Esconde footer "Hosted with Streamlit" */
-      footer { display: none !important; }
-      /* Esconde o botão flutuante "Manage app" no canto inferior */
-      .viewerBadge_container__1QSob,
-      .styles_viewerBadge__1yB5_,
-      .viewerBadge_link__1S137,
-      .viewerBadge_text__1JaDK,
-      a[href*="streamlit.io/cloud"],
-      [data-testid="manage-app-button"] {
-        display: none !important;
-      }
-      /* Compensa o espaço removido do header */
-      .stApp { padding-top: 0 !important; }
-      .main .block-container { padding-top: 2rem !important; }
+# IMPORTANTE: o CSS vive em static/style.css e é lido em runtime.
+# Motivo: quando o CSS era inline aqui dentro de st.markdown, os
+# comentários "/* ===== Título ===== */" tinham "=====" que o parser
+# Markdown do Streamlit interpreta como sublinhado de heading setext
+# H1, e isso quebrava o <style> no meio, vazando o restante do CSS
+# como texto na tela. Lendo o arquivo direto do disco e injetando o
+# conteúdo bruto numa única chamada st.markdown evita esse problema.
+from pathlib import Path as _Path
 
-      /* ===== Tipografia base ===== */
-      html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown * {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont,
-                     'Segoe UI', Roboto, sans-serif !important;
-      }
-      .stApp {
-        background: #F6F8FC;
-      }
+@st.cache_resource(show_spinner=False)
+def _carregar_css() -> str:
+    css_path = _Path(__file__).parent / "static" / "style.css"
+    try:
+        return css_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
 
-      /* ===== KPI cards (Visão geral — topo do Dashboard) ===== */
-      .kpi-card {
-        background: #FFFFFF;
-        border: 1px solid #E5E9F2;
-        border-top: 3px solid var(--accent-c, #1F4FD3);
-        border-radius: 8px;
-        padding: 18px 20px;
-        min-height: 130px;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
-        transition: box-shadow .15s ease, transform .15s ease;
-      }
-      .kpi-card:hover {
-        box-shadow: 0 4px 12px rgba(15, 23, 42, .08);
-      }
-      .kpi-card * { color: #1A2A4A !important; }
-      .kpi-icon {
-        font-size: 22px; line-height: 1; margin-bottom: 8px;
-        color: var(--accent-c, #1F4FD3) !important;
-      }
-      .kpi-label {
-        font-size: 12px !important;
-        text-transform: uppercase;
-        letter-spacing: .6px;
-        font-weight: 600;
-        color: #6B7280 !important;
-        margin-bottom: 4px;
-      }
-      .kpi-value {
-        font-size: 32px; font-weight: 600; line-height: 1.1;
-        margin-top: 4px;
-        color: #1A2A4A !important;
-      }
-      .kpi-value.accent { color: var(--accent-c, #1F4FD3) !important; }
-      .kpi-sub {
-        font-size: 12px;
-        margin-top: 6px;
-        font-weight: 400;
-        color: #6B7280 !important;
-      }
-
-      /* ===== Mini-card por categoria ===== */
-      .mini-card {
-        background: #FFFFFF;
-        border: 1px solid #E5E9F2;
-        border-radius: 8px;
-        padding: 14px 12px;
-        text-align: left;
-        min-height: 105px;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
-      }
-      .mini-card * { color: #1A2A4A !important; }
-      .mini-card .mc-icon {
-        font-size: 18px;
-        color: #6B7280 !important;
-      }
-      .mini-card .mc-label {
-        font-size: 11px; font-weight: 600; color: #6B7280 !important;
-        margin: 4px 0 6px;
-        text-transform: uppercase; letter-spacing: .5px;
-      }
-      .mini-card .mc-value {
-        font-size: 24px; font-weight: 600;
-        color: #1A2A4A !important;
-      }
-      .mini-card .mc-sub {
-        font-size: 11px; margin-top: 4px; font-weight: 500;
-        color: #6B7280 !important;
-      }
-      .mini-card.crit {
-        border-color: #FECACA;
-        border-left: 3px solid #DC2626;
-        background: #FEFCFC;
-      }
-      .mini-card.warn {
-        border-color: #FDE68A;
-        border-left: 3px solid #D97706;
-        background: #FFFDF8;
-      }
-      .mini-card.crit .mc-value { color: #B91C1C !important; }
-      .mini-card.warn .mc-value { color: #B45309 !important; }
-      .mini-card.crit .mc-sub   { color: #B91C1C !important; }
-      .mini-card.warn .mc-sub   { color: #B45309 !important; }
-
-      /* ===== Barra de saúde ===== */
-      .health-bar {
-        display: flex; height: 6px; border-radius: 3px;
-        overflow: hidden; margin: 8px 0 8px 0;
-        background: #E5E9F2;
-      }
-      .health-bar > div { transition: width .3s ease; }
-      .health-r { background: #DC2626; }
-      .health-y { background: #D97706; }
-      .health-g { background: #047857; }
-      .health-legend {
-        font-size: 12px; display: flex; gap: 18px;
-        font-weight: 500; color: #6B7280;
-      }
-
-      /* ===== Header de bloco ===== */
-      .bloco-header {
-        font-size: 16px; font-weight: 600;
-        margin-bottom: 12px;
-        display: flex; align-items: center; gap: 8px;
-        color: #1A2A4A;
-      }
-
-      /* ===== Header do CNAE consultado ===== */
-      .cnae-header {
-        padding: 22px 24px; border-radius: 8px; margin: 8px 0 16px 0;
-        background: #FFFFFF !important;
-      }
-      .cnae-header * { color: #1A2A4A !important; }
-      .cnae-header .cnae-label {
-        font-size: 12px !important; font-weight: 600;
-        text-transform: uppercase; letter-spacing: .6px;
-        color: #6B7280 !important;
-      }
-      .cnae-header .cnae-codigo {
-        font-size: 28px; font-weight: 600; line-height: 1.1;
-        margin: 8px 0 10px;
-        color: #1A2A4A !important;
-      }
-      .cnae-header .cnae-desc {
-        font-size: 15px; line-height: 1.5; font-weight: 400;
-        color: #4B5563 !important;
-      }
-      .cnae-header .cnae-badge {
-        display: inline-block; margin-top: 14px;
-        padding: 6px 16px; border-radius: 6px;
-        font-weight: 600; font-size: 12px;
-        letter-spacing: .4px;
-        text-transform: uppercase;
-      }
-      .cnae-header .cnae-badge,
-      .cnae-header .cnae-badge * { color: #FFFFFF !important; }
-
-      /* ===== Sidebar ===== */
-      section[data-testid="stSidebar"] {
-        background: #FFFFFF;
-        border-right: 1px solid #E5E9F2;
-      }
-      section[data-testid="stSidebar"] [role="radiogroup"] label,
-      section[data-testid="stSidebar"] [role="radiogroup"] label * {
-        font-size: 14px !important;
-        line-height: 1.5 !important;
-        color: #4B5563 !important;
-      }
-      section[data-testid="stSidebar"] [role="radiogroup"] label {
-        padding: 6px 4px !important;
-      }
-      /* item selecionado do menu */
-      section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked),
-      section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) * {
-        color: #1F4FD3 !important;
-        font-weight: 500 !important;
-      }
-      section[data-testid="stSidebar"] h1,
-      section[data-testid="stSidebar"] .stMarkdown h1 {
-        font-size: 18px !important;
-        font-weight: 600;
-        color: #1A2A4A !important;
-      }
-
-      /* ===== Cards de área (CNAE consultor) ===== */
-      .card-area {
-        background: #FFFFFF;
-        border: 1px solid #E5E9F2;
-        border-radius: 8px;
-        padding: 16px;
-        min-height: 140px;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
-      }
-      .card-area * { color: #1A2A4A !important; }
-      .card-area-head {
-        display: flex; justify-content: space-between;
-        align-items: center; margin-bottom: 10px;
-      }
-      .card-area-titulo {
-        font-size: 13px; font-weight: 600;
-        color: #1A2A4A !important;
-      }
-      .card-area-badge {
-        padding: 3px 10px; border-radius: 4px;
-        font-size: 11px; font-weight: 600;
-        letter-spacing: .3px; text-transform: uppercase;
-      }
-      .card-area-badge,
-      .card-area-badge * { color: #FFFFFF !important; }
-      .card-area-body {
-        font-size: 13px; line-height: 1.55;
-        color: #4B5563 !important;
-      }
-      .card-area-body i { color: #6B7280 !important; font-style: italic; }
-      .card-area-fonte {
-        font-size: 11px;
-        margin-top: 10px;
-        border-top: 1px solid #E5E9F2;
-        padding-top: 7px;
-        color: #6B7280 !important;
-      }
-      .card-area-fonte * { color: #6B7280 !important; }
-
-      /* ===== Botões nativos do Streamlit — refinados ===== */
-      .stButton > button {
-        font-weight: 500;
-        border-radius: 6px;
-        transition: all .15s ease;
-      }
-      .stButton > button[kind="primary"] {
-        background: #1F4FD3 !important;
-        border-color: #1F4FD3 !important;
-      }
-      .stButton > button[kind="primary"]:hover {
-        background: #1A41B3 !important;
-        border-color: #1A41B3 !important;
-      }
-
-      /* ===== Headers das páginas ===== */
-      h1, h2, h3, h4, h5, h6 {
-        color: #1A2A4A;
-        font-weight: 600;
-      }
-      h1 { font-size: 24px !important; }
-      h2 { font-size: 20px !important; }
-      h3 { font-size: 17px !important; }
-
-      /* ===== Links ===== */
-      a, .stMarkdown a { color: #1F4FD3; }
-      a:hover { color: #1A41B3; }
-
-      /* ===== Containers nativos do Streamlit (bordered) ===== */
-      [data-testid="stVerticalBlock"] > div[style*="border"] {
-        border-color: #E5E9F2 !important;
-        border-radius: 8px;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+_css_body = _carregar_css()
+if _css_body:
+    st.markdown(f"<style>{_css_body}</style>", unsafe_allow_html=True)
 
 # Habilita o corretor ortográfico do navegador (em pt-BR) em todos os
 # campos de texto e textareas. O Streamlit não seta `spellcheck` por
@@ -6464,4 +6208,166 @@ def pagina_configuracoes():
                         if st.button("❌ Rejeitar",
                                       key=f"rej_{s['id']}",
                                       use_container_width=True):
-    
+                            try:
+                                atualizar_solicitacao_cadastro(
+                                    s["id"], "rejeitada",
+                                    revisado_por=admin_email,
+                                    observacao=obs or None,
+                                )
+                                st.warning("Solicitação rejeitada.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Erro: {exc}")
+
+    # ---- Status do backend de banco ----
+    from db import info_backend
+    info = info_backend()
+    with st.container(border=True):
+        st.markdown("### 💾 Banco de dados")
+        if info["backend"] == "postgres":
+            st.success(f"{info['label']}")
+            st.caption(
+                "Os dados estão persistindo no Postgres do Supabase. "
+                "Múltiplos usuários da equipe podem acessar simultaneamente."
+            )
+        else:
+            st.warning(f"{info['label']}")
+            st.caption(
+                "⚠ Você está em **modo desenvolvimento local** — o banco "
+                "é um arquivo SQLite no seu PC. Para multi-usuário, "
+                "configure a variável `DATABASE_URL` com o Postgres do "
+                "Supabase."
+            )
+
+    # ---- JWT do GESTTA ----
+    with st.container(border=True):
+        st.markdown("### 🔑 Token GESTTA (JWT)")
+        st.caption(
+            "O token vence a cada ~24 horas. Quando o app começar a "
+            "retornar erro **401** ao buscar tarefas, atualize o token "
+            "aqui."
+        )
+        try:
+            from utils.gestta_api import jwt_info
+            from config import GESTTA_JWT
+            atual = jwt_info(GESTTA_JWT) if GESTTA_JWT else {"valido": False}
+        except Exception:
+            atual = {"valido": False, "erro": "não configurado"}
+
+        if atual.get("valido"):
+            cor = "🟢"
+            if atual.get("expirado"):
+                cor = "🔴"
+            elif (atual.get("horas_restantes") or 0) < 6:
+                cor = "🟡"
+            st.markdown(
+                f"**Status:** {cor} "
+                f"{('expirado' if atual.get('expirado') else 'ativo')}"
+                + f" · expira em **{atual.get('horas_restantes', '—')}h**"
+            )
+            st.caption(
+                f"Usuário: `{atual.get('user_name') or '—'}` · "
+                f"Empresa: `{atual.get('company') or '—'}`"
+            )
+        else:
+            st.error("Token não configurado ou inválido.")
+
+        with st.form("form_jwt"):
+            novo_jwt = st.text_area(
+                "Colar o novo JWT (começando com `JWT eyJ...`)",
+                height=100,
+                placeholder="JWT eyJhbGciOi...",
+                help=(
+                    "Como pegar: abra app.gestta.com.br logado, F12 → "
+                    "Application → Local Storage → ngStorage-jwt — copie "
+                    "o valor SEM as aspas."
+                ),
+            )
+            salvar = st.form_submit_button(
+                "💾 Salvar token", type="primary",
+                use_container_width=True,
+            )
+        if salvar:
+            if not novo_jwt.strip():
+                st.warning("Cole o token antes de salvar.")
+            else:
+                # Em produção (Streamlit Cloud) precisaria de uma forma de
+                # persistir entre redeploys. Por enquanto, salva em
+                # st.session_state pra durar a sessão, e mostra instrução.
+                st.session_state["GESTTA_JWT_OVERRIDE"] = novo_jwt.strip()
+                os.environ["GESTTA_JWT"] = novo_jwt.strip()
+                st.success(
+                    "✅ Token aplicado nesta sessão. "
+                    "Em produção, peça pro admin atualizar o segredo "
+                    "GESTTA_JWT no Streamlit Cloud para que persista entre "
+                    "reinícios."
+                )
+
+    # ---- Usuário logado ----
+    with st.container(border=True):
+        st.markdown("### 👤 Sessão atual")
+        from auth import usuario_atual
+        u = usuario_atual() or {}
+        st.markdown(
+            f"- **Nome:** {u.get('nome', '—')}\n"
+            f"- **Email:** {u.get('email', '—')}\n"
+            f"- **ID:** `{u.get('id', '—')}`"
+        )
+        if u.get("_dev"):
+            st.info(
+                "🧪 Você está em **modo dev** (sem autenticação). "
+                "Em produção, este painel mostrará o usuário real do "
+                "Supabase Auth."
+            )
+
+    # ---- Versões / Saúde ----
+    with st.container(border=True):
+        st.markdown("### 📦 Versões instaladas")
+        try:
+            import importlib.metadata as md
+            versoes = {p: md.version(p) for p in [
+                "streamlit", "pandas", "psycopg2-binary",
+                "supabase", "openpyxl",
+            ] if _pkg_existe(p)}
+            cols_v = st.columns(min(len(versoes) or 1, 5))
+            for i, (pkg, v) in enumerate(versoes.items()):
+                with cols_v[i % len(cols_v)]:
+                    st.metric(pkg, v)
+        except Exception as exc:
+            st.caption(f"(não foi possível listar versões: {exc})")
+
+
+def _pkg_existe(nome: str) -> bool:
+    try:
+        import importlib.metadata as md
+        md.version(nome)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------
+# ROTEAMENTO
+# ---------------------------------------------------------
+PAGINAS = {
+    "📊 Dashboard/Kanban": pagina_dashboard,
+    "➕ Novo Processo": pagina_novo_processo,
+    "📄 Documentos": pagina_documentos_vencimento,
+    "🏢 Empresas / REDESIM": pagina_empresas_redesim,
+    "📋 Tarefas GESTTA": pagina_tarefas_gestta,
+    "📌 Pendências Gerais": pagina_pendencias,
+    "🔬 Consultor de CNAE": pagina_consulta_cnae,
+    "🏷️ Classificador CNAE": pagina_classificador,
+    "📋 Matriz de Risco CNAE": pagina_matriz_risco,
+    "🏥 Portaria CVS-SP (Vigilância)": pagina_vigilancia,
+    "🚒 Matriz IT-01 Bombeiros": pagina_bombeiros,
+    "📥 Atualizar Normas": pagina_atualizar_normas,
+    "📲 Configurar Telegram": pagina_telegram,
+    "⏰ Lembretes / Testes": pagina_lembretes,
+    "⚙️ Configurações": pagina_configuracoes,
+}
+
+# Widget do usuário logado na sidebar
+renderizar_widget_sidebar()
+
+PAGINAS[pagina]()
