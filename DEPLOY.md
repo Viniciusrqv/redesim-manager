@@ -170,6 +170,41 @@ Pra você (e a equipe) conseguir entrar:
 
 ---
 
+## 🔔 Telegram via GitHub Actions
+
+O Telegram **não roda mais pelo `scheduler.py` local** quando o app está online. Em produção, os alertas são disparados pelo GitHub Actions 2x por dia (10h e 15h horário de Brasília) via o workflow `.github/workflows/lembretes.yml`.
+
+### Como configurar (uma vez só)
+
+1. Abra https://github.com/Viniciusrqv/redesim-manager/settings/secrets/actions
+2. Clica em **"New repository secret"** e adiciona 3 secrets:
+
+   | Nome do secret | Valor |
+   |---|---|
+   | `DATABASE_URL` | (mesma do Streamlit Cloud — connection string do Supabase) |
+   | `TELEGRAM_BOT_TOKEN` | (mesmo do seu `.env` local) |
+   | `TELEGRAM_CHAT_ID` | (mesmo do seu `.env` local) |
+
+3. Pronto. Nos próximos horários (10h e 15h BRT) o GitHub Actions roda sozinho e manda no Telegram.
+
+### Como testar agora (rodar manualmente)
+
+1. Abra https://github.com/Viniciusrqv/redesim-manager/actions
+2. Clica no workflow **"Lembretes diários (Telegram)"** na barra esquerda
+3. Botão **"Run workflow"** (canto direito) → branch `main` → **Run workflow**
+4. Em ~1 min você vê o resultado e (se houver pendências) o Telegram recebe a mensagem
+
+### Mudar horários
+
+Edita `.github/workflows/lembretes.yml`, linhas com `cron:`. Lembrando que **GitHub usa UTC**:
+- Brasília 10h = UTC 13h → `0 13 * * *`
+- Brasília 15h = UTC 18h → `0 18 * * *`
+- Brasília 8h  = UTC 11h → `0 11 * * *` (exemplo)
+
+Depois `git push` — começa a usar o novo horário a partir da próxima execução.
+
+---
+
 ## 🔄 Como atualizar depois (dia-a-dia)
 
 Quando Claude/você modificar o código localmente:
