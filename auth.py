@@ -4,12 +4,14 @@ auth.py
 Autenticação via Supabase Auth + tela de login no Streamlit.
 
 Em DEV (sem SUPABASE_URL configurada) bypassa o login automaticamente
-pra Eduardo continuar mexendo localmente sem fricção.
+pra rodar local sem fricção.
 
 Em PROD:
-  - Mostra tela de login (email + senha)
-  - Cria sessão em st.session_state["user"]
-  - Bloqueia o app inteiro até logar
+  - Mostra tela com 3 abas: Entrar / Criar conta / Esqueci a senha
+  - Login: chama Supabase Auth
+  - Criar conta: salva solicitação na tabela `solicitacoes_cadastro`
+    (Eduardo aprova depois pelo painel ⚙️ Configurações)
+  - Recuperação: envia link via Supabase
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ import streamlit as st
 
 # Importa segredos da camada db (que já lê de st.secrets ou .env)
 try:
-    from db import is_postgres  # noqa: F401  (importação que dispara load do env)
+    from db import is_postgres  # noqa: F401  (dispara load do env)
 except ImportError:
     pass
 
@@ -59,7 +61,6 @@ def exigir_login() -> dict:
     Em DEV (sem Supabase configurado) retorna um usuário fake.
     """
     if not _supabase_disponivel():
-        # Modo dev — bypassa
         return {
             "id": "dev-user",
             "email": "dev@local",
@@ -71,9 +72,8 @@ def exigir_login() -> dict:
     if user:
         return user
 
-    # Não logado — mostra tela de login
     _renderizar_tela_login()
-    st.stop()  # não permite o resto do app rodar
+    st.stop()
 
 
 def logout():
@@ -89,21 +89,111 @@ def logout():
 
 
 # ====================================================================
+# AÇÕES (chamadas pelos botões)
+# ====================================================================
+def _acao_login():
+    """Executa login. Lê estado de st.session_state e atualiza."""
+    email = (st.session_state.get("login_email") or "").strip()
+    senha = st.session_state.get("login_senha") or ""
+    if not email or not senha:
+        st.session_state["_login_msg"] = ("error", "Preencha email e senha.")
+        return
+    try:
+        cli = _get_client()
+        resp = cli.auth.sign_in_with_password({
+            "email": email, "password": senha,
+        })
+        user = resp.user
+        if user:
+            st.session_state["auth_user"] = {
+                "id": user.id,
+                "email": user.email,
+                "nome": (user.user_metadata or {}).get(
+                    "full_name", user.email),
+            }
+            # Limpa campos
+            st.session_state.pop("login_email", None)
+            st.session_state.pop("login_senha", None)
+            st.session_state["_login_msg"] = ("success", "Entrando…")
+        else:
+            st.session_state["_login_msg"] = (
+                "error", "Email ou senha incorretos.")
+    except Exception as exc:
+        msg = str(exc)
+        if "Invalid login credentials" in msg:
+            st.session_state["_login_msg"] = (
+                "error", "❌ Email ou senha incorretos.")
+        elif "Email not confirmed" in msg:
+            st.session_state["_login_msg"] = (
+                "error",
+                "📧 Sua conta ainda não foi confirmada. Peça ao admin.")
+        else:
+            st.session_state["_login_msg"] = ("error", f"Erro: {msg[:150]}")
+
+
+def _acao_solicitar_cadastro():
+    """Salva uma solicitação de cadastro na tabela local."""
+    nome = (st.session_state.get("cad_nome") or "").strip()
+    email = (st.session_state.get("cad_email") or "").strip().lower()
+    funcao = (st.session_state.get("cad_funcao") or "").strip() or None
+    justificativa = (st.session_state.get("cad_just") or "").strip() or None
+
+    if not nome:
+        st.session_state["_cad_msg"] = ("error", "Digite seu nome completo.")
+        return
+    if not email or "@" not in email:
+        st.session_state["_cad_msg"] = ("error", "Email inválido.")
+        return
+
+    try:
+        from database import criar_solicitacao_cadastro
+        criar_solicitacao_cadastro(
+            nome=nome, email=email,
+            funcao=funcao, justificativa=justificativa,
+        )
+        # Limpa campos
+        for k in ("cad_nome", "cad_email", "cad_funcao", "cad_just"):
+            st.session_state.pop(k, None)
+        st.session_state["_cad_msg"] = (
+            "success",
+            f"✅ Solicitação enviada! O admin vai revisar e te avisar "
+            f"por email ({email}) quando aprovar.",
+        )
+    except ValueError as exc:
+        st.session_state["_cad_msg"] = ("warning", str(exc))
+    except Exception as exc:
+        st.session_state["_cad_msg"] = (
+            "error", f"Erro ao salvar: {str(exc)[:150]}")
+
+
+def _acao_reset_senha():
+    email = (st.session_state.get("reset_email") or "").strip()
+    if not email:
+        st.session_state["_reset_msg"] = ("warning", "Digite o email.")
+        return
+    try:
+        cli = _get_client()
+        cli.auth.reset_password_email(email)
+        st.session_state["_reset_msg"] = (
+            "success",
+            "Link enviado! Cheque seu email (pode demorar até 1 min).",
+        )
+    except Exception as exc:
+        st.session_state["_reset_msg"] = (
+            "error", f"Erro: {str(exc)[:150]}")
+
+
+# ====================================================================
 # UI
 # ====================================================================
 def _renderizar_tela_login():
-    """Tela de login centralizada. Bonita o suficiente."""
-    # CSS pra centralizar
+    """Tela de login com 3 abas — sem st.form pra evitar o warning."""
+    # CSS pra centralizar e estilizar
     st.markdown("""
       <style>
         .block-container { padding-top: 4rem; max-width: 480px; }
-        .login-card {
-          background: #1F2937; border: 1px solid #374151;
-          border-radius: 14px; padding: 32px 28px;
-          box-shadow: 0 8px 20px rgba(0,0,0,.3);
-        }
         .login-title {
-          font-size: 24px; font-weight: 800; text-align: center;
+          font-size: 26px; font-weight: 800; text-align: center;
           margin-bottom: 4px; color: #F9FAFB;
         }
         .login-sub {
@@ -115,90 +205,92 @@ def _renderizar_tela_login():
 
     st.markdown(
         "<div class='login-title'>📝 REDESIM Manager</div>"
-        "<div class='login-sub'>CSM Contabilidade — entre com sua conta</div>",
+        "<div class='login-sub'>CSM Contabilidade — sistema de gestão de "
+        "licenças e processos</div>",
         unsafe_allow_html=True,
     )
 
-    tab_login, tab_reset = st.tabs(["🔐 Entrar", "🔑 Esqueci a senha"])
+    tab_entrar, tab_cadastrar, tab_reset = st.tabs([
+        "🔐 Entrar", "📝 Criar conta", "🔑 Esqueci a senha",
+    ])
 
-    with tab_login:
-        with st.form("form_login", clear_on_submit=False):
-            email = st.text_input(
-                "Email", placeholder="seu.email@csm.com.br",
-                key="login_email",
-            )
-            senha = st.text_input(
-                "Senha", type="password", key="login_senha",
-            )
-            submitted = st.form_submit_button(
-                "🔓 Entrar", type="primary", use_container_width=True,
-            )
+    # -------- ENTRAR --------
+    with tab_entrar:
+        st.text_input(
+            "Email", placeholder="seu.email@csm.com.br",
+            key="login_email",
+        )
+        st.text_input(
+            "Senha", type="password", key="login_senha",
+        )
+        st.button(
+            "🔓 Entrar", type="primary", use_container_width=True,
+            on_click=_acao_login, key="btn_login",
+        )
+        msg = st.session_state.pop("_login_msg", None)
+        if msg:
+            tipo, txt = msg
+            getattr(st, tipo)(txt)
+            if tipo == "success":
+                st.rerun()
 
-        if submitted:
-            if not email or not senha:
-                st.error("Preencha email e senha.")
-                return
-            try:
-                cli = _get_client()
-                resp = cli.auth.sign_in_with_password({
-                    "email": email.strip(),
-                    "password": senha,
-                })
-                user = resp.user
-                if user:
-                    st.session_state["auth_user"] = {
-                        "id": user.id,
-                        "email": user.email,
-                        "nome": (user.user_metadata or {}).get(
-                            "full_name", user.email),
-                    }
-                    st.success("Login OK — entrando…")
-                    st.rerun()
-                else:
-                    st.error("Email ou senha incorretos.")
-            except Exception as exc:
-                msg = str(exc)
-                if "Invalid login credentials" in msg:
-                    st.error("❌ Email ou senha incorretos.")
-                elif "Email not confirmed" in msg:
-                    st.error(
-                        "📧 Confirme seu email — verifique a caixa de "
-                        "entrada do Supabase.")
-                else:
-                    st.error(f"Erro: {msg[:150]}")
+    # -------- CRIAR CONTA --------
+    with tab_cadastrar:
+        st.caption(
+            "Solicite acesso ao sistema. O admin (Vinicius Rafael) "
+            "vai revisar e te avisar por email quando aprovar."
+        )
+        st.text_input(
+            "Nome completo *", placeholder="Ex.: Maria Silva",
+            key="cad_nome",
+        )
+        st.text_input(
+            "Email *", placeholder="seu.email@csm.com.br",
+            key="cad_email",
+        )
+        st.text_input(
+            "Função / cargo", placeholder="Ex.: Auxiliar fiscal",
+            key="cad_funcao",
+        )
+        st.text_area(
+            "Justificativa (opcional)",
+            placeholder="Por que você precisa de acesso?",
+            key="cad_just",
+            height=70,
+        )
+        st.button(
+            "📨 Solicitar acesso", type="primary",
+            use_container_width=True,
+            on_click=_acao_solicitar_cadastro, key="btn_cad",
+        )
+        msg = st.session_state.pop("_cad_msg", None)
+        if msg:
+            tipo, txt = msg
+            getattr(st, tipo)(txt)
 
+    # -------- ESQUECI A SENHA --------
     with tab_reset:
         st.caption(
             "Digite seu email e enviaremos um link de recuperação. "
-            "(Verifique também a caixa de spam.)"
+            "Verifique também a caixa de spam."
         )
-        with st.form("form_reset"):
-            email_r = st.text_input(
-                "Email", key="reset_email",
-                placeholder="seu.email@csm.com.br",
-            )
-            sub = st.form_submit_button(
-                "📧 Enviar link", use_container_width=True,
-            )
-        if sub:
-            if not email_r:
-                st.warning("Digite o email.")
-            else:
-                try:
-                    cli = _get_client()
-                    cli.auth.reset_password_email(email_r.strip())
-                    st.success(
-                        "Link enviado! Cheque seu email "
-                        "(pode demorar até 1 min)."
-                    )
-                except Exception as exc:
-                    st.error(f"Erro: {str(exc)[:150]}")
+        st.text_input(
+            "Email", key="reset_email",
+            placeholder="seu.email@csm.com.br",
+        )
+        st.button(
+            "📧 Enviar link", use_container_width=True,
+            on_click=_acao_reset_senha, key="btn_reset",
+        )
+        msg = st.session_state.pop("_reset_msg", None)
+        if msg:
+            tipo, txt = msg
+            getattr(st, tipo)(txt)
 
     st.divider()
     st.caption(
-        "👤 Para criar uma conta nova, peça ao admin "
-        "(Vinicius Rafael) — não há cadastro público por questões de "
-        "segurança."
+        "🔒 Acesso controlado — somente usuários aprovados pelo "
+        "admin (Vinicius Rafael) podem entrar."
     )
 
 
@@ -214,7 +306,20 @@ def renderizar_widget_sidebar():
         f"{icon} **{user.get('nome') or user.get('email') or '—'}**"
         + ("  *(modo dev — sem auth)*" if is_dev else "")
     )
+
+    # Mostra contador de solicitações pendentes pro admin
     if not is_dev:
+        try:
+            from database import contar_solicitacoes_pendentes
+            pendentes = contar_solicitacoes_pendentes()
+            if pendentes > 0:
+                st.sidebar.warning(
+                    f"📨 **{pendentes} solicitação(ões) de cadastro "
+                    f"pendente(s).** Veja em ⚙️ Configurações."
+                )
+        except Exception:
+            pass
+
         if st.sidebar.button("Sair", key="btn_logout",
                               use_container_width=True):
             logout()

@@ -482,6 +482,22 @@ DDL = [
     CREATE INDEX IF NOT EXISTS idx_hab_prof_cnae
     ON cnae_habilitacao_profissional(cnae);
     """,
+    # Solicitações de cadastro para acesso ao app (aprovação manual
+    # pelo admin antes de criar usuário no Supabase Auth).
+    """
+    CREATE TABLE IF NOT EXISTS solicitacoes_cadastro (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome          TEXT NOT NULL,
+        email         TEXT NOT NULL UNIQUE,
+        funcao        TEXT,
+        justificativa TEXT,
+        status        TEXT NOT NULL DEFAULT 'pendente',
+        criado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        revisado_em   TEXT,
+        revisado_por  TEXT,
+        observacao_admin TEXT
+    );
+    """,
     """
     CREATE TABLE IF NOT EXISTS cnae_verificacao (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3065,6 +3081,93 @@ def listar_habilitacoes_cnae(cnae: str) -> list[dict]:
                          atividade_gatilho""",
             (cnae,),
         ).fetchall()]
+
+
+# =====================================================================
+# SOLICITAÇÕES DE CADASTRO (aprovação manual antes de criar no Supabase)
+# =====================================================================
+def criar_solicitacao_cadastro(
+    nome: str, email: str,
+    *, funcao: str | None = None,
+    justificativa: str | None = None,
+) -> int:
+    """Salva uma solicitação de cadastro. Retorna o id da solicitação.
+    Levanta ValueError se já existe solicitação ativa pro mesmo email.
+    """
+    email = email.strip().lower()
+    nome = nome.strip()
+    if not nome or not email:
+        raise ValueError("Nome e email são obrigatórios.")
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT id, status FROM solicitacoes_cadastro WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if existe:
+            if existe["status"] == "pendente":
+                raise ValueError(
+                    "Já existe uma solicitação pendente para este email."
+                )
+            if existe["status"] == "aprovada":
+                raise ValueError(
+                    "Este email já foi aprovado. Tente fazer login ou "
+                    "use 'Esqueci a senha'."
+                )
+            # rejeitada → permite tentar de novo (apaga a antiga)
+            conn.execute(
+                "DELETE FROM solicitacoes_cadastro WHERE id = ?",
+                (existe["id"],),
+            )
+        cur = conn.execute(
+            """INSERT INTO solicitacoes_cadastro
+                 (nome, email, funcao, justificativa, status)
+                 VALUES (?, ?, ?, ?, 'pendente')""",
+            (nome, email, funcao, justificativa),
+        )
+        return cur.lastrowid
+
+
+def listar_solicitacoes_cadastro(
+    status: str | None = "pendente",
+) -> list[dict]:
+    """Lista solicitações de cadastro. status=None retorna todas."""
+    sql = "SELECT * FROM solicitacoes_cadastro"
+    params: tuple = ()
+    if status:
+        sql += " WHERE status = ?"
+        params = (status,)
+    sql += " ORDER BY criado_em DESC"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def atualizar_solicitacao_cadastro(
+    solicitacao_id: int, novo_status: str,
+    *, revisado_por: str | None = None,
+    observacao: str | None = None,
+) -> None:
+    """Atualiza status da solicitação (aprovada/rejeitada/criada)."""
+    if novo_status not in {"pendente", "aprovada", "rejeitada", "criada"}:
+        raise ValueError(f"Status inválido: {novo_status}")
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE solicitacoes_cadastro SET
+                 status = ?,
+                 revisado_em = datetime('now', 'localtime'),
+                 revisado_por = COALESCE(?, revisado_por),
+                 observacao_admin = COALESCE(?, observacao_admin)
+                WHERE id = ?""",
+            (novo_status, revisado_por, observacao, solicitacao_id),
+        )
+
+
+def contar_solicitacoes_pendentes() -> int:
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT COUNT(*) AS c FROM solicitacoes_cadastro "
+            "WHERE status = 'pendente'"
+        ).fetchone()
+        return int(dict(r)["c"]) if r else 0
 
 
 def listar_conselhos_cnae(cnae: str) -> list[dict]:

@@ -6221,6 +6221,114 @@ def pagina_configuracoes():
         "atualizados com frequência (ex.: token GESTTA a cada 24h)."
     )
 
+    # ---- Solicitações de cadastro pendentes ----
+    try:
+        from database import (
+            listar_solicitacoes_cadastro,
+            atualizar_solicitacao_cadastro,
+            contar_solicitacoes_pendentes,
+        )
+        pendentes = contar_solicitacoes_pendentes()
+    except Exception:
+        pendentes = 0
+
+    with st.container(border=True):
+        st.markdown(
+            f"### 📨 Solicitações de cadastro pendentes "
+            f"({pendentes})"
+        )
+        if pendentes == 0:
+            st.caption(
+                "Nenhuma solicitação pendente. Quando alguém clica em "
+                "'Criar conta' na tela de login, aparece aqui pra você "
+                "aprovar."
+            )
+        else:
+            st.caption(
+                "Pessoas pedindo acesso ao sistema. Aprovar cria o "
+                "usuário no Supabase Auth (você precisa fazer o passo "
+                "manual no painel — eu mostro o atalho)."
+            )
+            from auth import usuario_atual
+            admin = usuario_atual() or {}
+            admin_email = admin.get("email", "admin")
+
+            try:
+                lista = listar_solicitacoes_cadastro(status="pendente")
+            except Exception as exc:
+                st.error(f"Erro ao listar: {exc}")
+                lista = []
+
+            for s in lista:
+                with st.expander(
+                    f"👤 {s['nome']} · {s['email']} · "
+                    f"_{s.get('funcao') or 'sem cargo'}_",
+                ):
+                    st.markdown(
+                        f"**Nome:** {s['nome']}  \n"
+                        f"**Email:** `{s['email']}`  \n"
+                        f"**Função:** {s.get('funcao') or '—'}  \n"
+                        f"**Justificativa:** "
+                        f"{s.get('justificativa') or '—'}  \n"
+                        f"**Solicitado em:** {s['criado_em']}"
+                    )
+                    obs = st.text_area(
+                        "Observação (opcional, salva no histórico)",
+                        key=f"obs_{s['id']}", height=60,
+                    )
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    sup_url = os.getenv("SUPABASE_URL", "")
+                    if sup_url:
+                        ref = (sup_url.replace("https://", "")
+                               .split(".")[0])
+                        cria_user_url = (
+                            f"https://supabase.com/dashboard/project/"
+                            f"{ref}/auth/users"
+                        )
+                    else:
+                        cria_user_url = "https://supabase.com/dashboard"
+
+                    with c1:
+                        st.link_button(
+                            "🌐 Abrir Supabase pra criar o usuário",
+                            cria_user_url,
+                            use_container_width=True,
+                        )
+                    with c2:
+                        if st.button("✅ Aprovar",
+                                      key=f"apr_{s['id']}",
+                                      use_container_width=True,
+                                      type="primary"):
+                            try:
+                                atualizar_solicitacao_cadastro(
+                                    s["id"], "aprovada",
+                                    revisado_por=admin_email,
+                                    observacao=obs or None,
+                                )
+                                st.success(
+                                    "Aprovada! Agora abra o Supabase no "
+                                    "botão acima e crie o usuário com este "
+                                    f"email: `{s['email']}`. Marque "
+                                    "**'Auto Confirm User'** ✓."
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Erro: {exc}")
+                    with c3:
+                        if st.button("❌ Rejeitar",
+                                      key=f"rej_{s['id']}",
+                                      use_container_width=True):
+                            try:
+                                atualizar_solicitacao_cadastro(
+                                    s["id"], "rejeitada",
+                                    revisado_por=admin_email,
+                                    observacao=obs or None,
+                                )
+                                st.warning("Solicitação rejeitada.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Erro: {exc}")
+
     # ---- Status do backend de banco ----
     from db import info_backend
     info = info_backend()
