@@ -190,9 +190,8 @@ def _renderizar_tela_login():
     """Tela de login com 3 abas — sem st.form pra evitar o warning."""
     # CSS pra centralizar e estilizar
     st.markdown("""
-      <link rel="preconnect" href="https://fonts.googleapis.com">
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
       <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         html, body, [class*="css"], .stApp {
           font-family: 'Inter', -apple-system, BlinkMacSystemFont,
                        'Segoe UI', Roboto, sans-serif !important;
