@@ -561,6 +561,28 @@ DDL = [
         UNIQUE(sigla, uf)
     );
     """,
+    # Histórico de verificações manuais empresa × órgão.
+    # Quando você (ou alguém da equipe) abre o portal oficial e
+    # confirma que o cadastro/licença da empresa naquele órgão está
+    # OK (ou não se aplica), salva aqui pra próxima consulta já
+    # aparecer "✅ verificado em DD/MM por X".
+    """
+    CREATE TABLE IF NOT EXISTS empresa_orgao_verificacao (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnpj            TEXT NOT NULL,
+        orgao_sigla     TEXT NOT NULL,
+        orgao_uf        TEXT,
+        status          TEXT NOT NULL,
+        observacao      TEXT,
+        verificado_por  TEXT,
+        verificado_em   TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(cnpj, orgao_sigla, orgao_uf)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_empresa_orgao_verif_cnpj
+    ON empresa_orgao_verificacao(cnpj);
+    """,
     """
     CREATE TABLE IF NOT EXISTS cnae_verificacao (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3535,6 +3557,123 @@ def buscar_orgao(sigla: str, uf: str | None = None) -> dict | None:
         return None
 
 
+STATUS_VERIFICACAO_OK = "verificado"
+STATUS_VERIFICACAO_NA = "nao_se_aplica"
+STATUS_VERIFICACAO_PENDENTE = "pendente"
+STATUS_VERIFICACAO_PROBLEMA = "problema"
+
+STATUS_VERIFICACAO_VALIDOS = {
+    STATUS_VERIFICACAO_OK,
+    STATUS_VERIFICACAO_NA,
+    STATUS_VERIFICACAO_PENDENTE,
+    STATUS_VERIFICACAO_PROBLEMA,
+}
+
+
+def registrar_verificacao_orgao(
+    cnpj: str, orgao_sigla: str, status: str,
+    *, orgao_uf: str | None = None,
+    verificado_por: str | None = None,
+    observacao: str | None = None,
+) -> None:
+    """Marca/atualiza o status de verificação da empresa em um órgão.
+
+    status:
+      - 'verificado'    → está OK no órgão (cadastro/licença ativo)
+      - 'nao_se_aplica' → confirmamos que não precisa pra essa empresa
+      - 'problema'      → encontramos pendência/irregularidade
+      - 'pendente'      → reset (volta a aparecer no checklist)
+    """
+    cnpj_norm = "".join(c for c in (cnpj or "") if c.isdigit())
+    sig = (orgao_sigla or "").strip().upper()
+    uf_norm = (orgao_uf or "").strip().upper() or None
+    if not cnpj_norm or not sig:
+        raise ValueError("CNPJ e órgão são obrigatórios.")
+    if status not in STATUS_VERIFICACAO_VALIDOS:
+        raise ValueError(f"Status inválido: {status}")
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT id FROM empresa_orgao_verificacao WHERE "
+            "cnpj = ? AND orgao_sigla = ? AND "
+            "COALESCE(orgao_uf, '') = COALESCE(?, '')",
+            (cnpj_norm, sig, uf_norm),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                """UPDATE empresa_orgao_verificacao SET
+                       status = ?, observacao = ?,
+                       verificado_por = COALESCE(?, verificado_por),
+                       verificado_em = datetime('now', 'localtime')
+                     WHERE id = ?""",
+                (status, observacao, verificado_por,
+                 dict(existe)["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO empresa_orgao_verificacao
+                     (cnpj, orgao_sigla, orgao_uf, status, observacao,
+                      verificado_por)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                (cnpj_norm, sig, uf_norm, status, observacao,
+                 verificado_por),
+            )
+
+
+def buscar_verificacao_orgao(
+    cnpj: str, orgao_sigla: str,
+    *, orgao_uf: str | None = None,
+) -> dict | None:
+    """Retorna a última verificação registrada (ou None)."""
+    cnpj_norm = "".join(c for c in (cnpj or "") if c.isdigit())
+    sig = (orgao_sigla or "").strip().upper()
+    uf_norm = (orgao_uf or "").strip().upper() or None
+    if not cnpj_norm or not sig:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM empresa_orgao_verificacao WHERE "
+            "cnpj = ? AND orgao_sigla = ? AND "
+            "COALESCE(orgao_uf, '') = COALESCE(?, '')",
+            (cnpj_norm, sig, uf_norm),
+        ).fetchone()
+        return dict(r) if r else None
+
+
+def listar_verificacoes_empresa(cnpj: str) -> dict[str, dict]:
+    """Retorna mapa {orgao_sigla: dados_verificacao} pra essa empresa.
+
+    Útil pra enriquecer o checklist sem fazer N queries (uma por item).
+    """
+    cnpj_norm = "".join(c for c in (cnpj or "") if c.isdigit())
+    if not cnpj_norm:
+        return {}
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM empresa_orgao_verificacao WHERE cnpj = ?",
+            (cnpj_norm,),
+        ).fetchall()
+        return {dict(r)["orgao_sigla"]: dict(r) for r in rows}
+
+
+def remover_verificacao_orgao(
+    cnpj: str, orgao_sigla: str,
+    *, orgao_uf: str | None = None,
+) -> None:
+    """Reseta a verificação (volta o item pra 'pendente' no checklist)."""
+    cnpj_norm = "".join(c for c in (cnpj or "") if c.isdigit())
+    sig = (orgao_sigla or "").strip().upper()
+    uf_norm = (orgao_uf or "").strip().upper() or None
+    if not cnpj_norm or not sig:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM empresa_orgao_verificacao WHERE "
+            "cnpj = ? AND orgao_sigla = ? AND "
+            "COALESCE(orgao_uf, '') = COALESCE(?, '')",
+            (cnpj_norm, sig, uf_norm),
+        )
+
+
 def listar_orgaos(categoria: str | None = None,
                   esfera: str | None = None) -> list[dict]:
     sql = "SELECT * FROM orgaos_oficiais WHERE 1=1"
@@ -4176,6 +4315,27 @@ def analisar_empresa_completa(
             "da Receita."
         )
 
+    # 6) Enriquece cada item do checklist com a última verificação manual
+    # (empresa existente — empresa nova não tem CNPJ ainda)
+    verif_map = {}
+    if cnpj_lim:
+        try:
+            verif_map = listar_verificacoes_empresa(cnpj_lim)
+        except Exception:
+            verif_map = {}
+
+    for item in checklist.values():
+        v = verif_map.get(item["sigla"])
+        if v:
+            item["verificacao"] = {
+                "status": v.get("status"),
+                "verificado_em": v.get("verificado_em"),
+                "verificado_por": v.get("verificado_por"),
+                "observacao": v.get("observacao"),
+            }
+        else:
+            item["verificacao"] = None
+
     return {
         "empresa": dados,
         "is_nova": False,
@@ -4184,12 +4344,31 @@ def analisar_empresa_completa(
         "risco_consolidado": risco_top,
         "checklist": sorted(
             checklist.values(),
-            key=lambda x: (not x["obrigatorio"], x["categoria"], x["sigla"]),
+            # Ordem: pendentes obrigatórios → verificados → N/A
+            key=lambda x: (
+                # 0 = pendente obrigatório, 1 = pendente opcional,
+                # 2 = problema, 3 = verificado, 4 = não se aplica
+                _peso_status(x.get("verificacao"), x["obrigatorio"]),
+                x["categoria"], x["sigla"],
+            ),
         ),
         "alertas_globais": alertas,
         "total_cnaes": len(todas_analises),
         "data_analise": _dt.now().isoformat(timespec="seconds"),
     }
+
+
+def _peso_status(verif: dict | None, obrigatorio: bool) -> int:
+    """Peso pra ordenar checklist (menor = aparece primeiro)."""
+    if not verif or verif.get("status") == STATUS_VERIFICACAO_PENDENTE:
+        return 0 if obrigatorio else 1
+    if verif.get("status") == STATUS_VERIFICACAO_PROBLEMA:
+        return -1   # problemas SEMPRE no topo
+    if verif.get("status") == STATUS_VERIFICACAO_OK:
+        return 3
+    if verif.get("status") == STATUS_VERIFICACAO_NA:
+        return 4
+    return 2
 
 
 def analisar_cnaes_pretendidos(

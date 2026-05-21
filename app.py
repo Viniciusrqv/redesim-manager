@@ -5832,13 +5832,44 @@ def _render_relatorio_empresa(rel: dict):
 
     # Cabeçalho com legenda
     st.caption(
-        "🔴 **Obrigatório** — você precisa cadastrar/manter ativo · "
-        "🟡 **Verificar** — pode aplicar dependendo da operação · "
-        "Clique nos links pra abrir o portal oficial."
+        "🔴 **Obrigatório** · 🟡 **Verificar** · "
+        "✅ **Verificado** · ⛔ **Não se aplica** · 🚨 **Problema**. "
+        "Use os botões em cada item pra registrar o que você confirmou "
+        "no portal oficial — fica salvo pra próxima consulta."
+    )
+
+    # CNPJ usado pra salvar/carregar verificações (vazio se empresa nova)
+    cnpj_atual = (emp.get("cnpj") or "").strip()
+
+    # Pega o usuário logado pra registrar "verificado por X"
+    from auth import usuario_atual as _u_atual
+    _u = _u_atual() or {}
+    quem = _u.get("nome") or _u.get("email") or "—"
+
+    from database import (
+        registrar_verificacao_orgao as _reg_verif,
+        remover_verificacao_orgao as _rm_verif,
+        STATUS_VERIFICACAO_OK, STATUS_VERIFICACAO_NA,
+        STATUS_VERIFICACAO_PROBLEMA,
     )
 
     for item in cl:
-        marcador = "🔴" if item["obrigatorio"] else "🟡"
+        verif = item.get("verificacao") or None
+        status = (verif or {}).get("status")
+        # Determina marcador visual e cor do container
+        if status == "verificado":
+            marcador = "✅"
+            cor_borda = "#047857"
+        elif status == "nao_se_aplica":
+            marcador = "⛔"
+            cor_borda = "#6B7280"
+        elif status == "problema":
+            marcador = "🚨"
+            cor_borda = "#DC2626"
+        else:
+            marcador = "🔴" if item["obrigatorio"] else "🟡"
+            cor_borda = "#E5E9F2"
+
         esfera_emoji = {
             "federal": "🇧🇷",
             "estadual": "🏛️",
@@ -5850,11 +5881,42 @@ def _render_relatorio_empresa(rel: dict):
                 f"**{marcador} {item['sigla']}** {esfera_emoji} — "
                 f"{item['nome']}"
             )
+
+            # Status atual em destaque (se houver)
+            if verif:
+                quando = (verif.get("verificado_em") or "—")[:10]
+                quem_v = verif.get("verificado_por") or "—"
+                texto_status = {
+                    "verificado": (
+                        f"✅ **Verificado em {quando}** por {quem_v}"
+                    ),
+                    "nao_se_aplica": (
+                        f"⛔ **Marcado como não se aplica** "
+                        f"em {quando} por {quem_v}"
+                    ),
+                    "problema": (
+                        f"🚨 **Problema registrado** em {quando} "
+                        f"por {quem_v}"
+                    ),
+                    "pendente": "🔵 Marcado como pendente novamente",
+                }.get(status, "")
+                if texto_status:
+                    st.markdown(
+                        f"<div style='background:#F6F8FC; padding:8px 12px; "
+                        f"border-radius:6px; margin:6px 0;'>{texto_status}"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                if verif.get("observacao"):
+                    st.caption(f"📝 {verif['observacao']}")
+
             if item.get("descricao"):
                 st.caption(item["descricao"])
             st.markdown("**Por que aparece aqui:**")
             for m in item.get("motivos", []):
                 st.markdown(f"- {m}")
+
+            # Linha 1: links oficiais
             cc1, cc2 = st.columns(2)
             with cc1:
                 if item.get("link_consulta"):
@@ -5875,7 +5937,123 @@ def _render_relatorio_empresa(rel: dict):
                 else:
                     st.caption("(sem link de cadastro cadastrado)")
 
+            # Linha 2: botões de verificação (só pra empresa existente)
+            if cnpj_atual:
+                key_pref = f"verif_{cnpj_atual}_{item['sigla']}"
+                obs_key = f"{key_pref}_obs"
+
+                st.markdown(
+                    "<div style='margin-top:8px;'></div>",
+                    unsafe_allow_html=True,
+                )
+                # Campo de observação opcional
+                with st.expander("📝 Adicionar observação (opcional)",
+                                  expanded=False):
+                    st.text_area(
+                        "Observação que será salva junto:",
+                        key=obs_key,
+                        placeholder=(
+                            "Ex.: AVCB nº 12345 vence em 30/04/2027 · "
+                            "RT é Dr. João CRM 12345 · etc."
+                        ),
+                        height=70,
+                        label_visibility="collapsed",
+                    )
+
+                bcol1, bcol2, bcol3, bcol4 = st.columns(4)
+                _obs = st.session_state.get(obs_key, "") or ""
+                with bcol1:
+                    if st.button(
+                        "✅ Verificado",
+                        key=f"{key_pref}_ok",
+                        use_container_width=True,
+                        disabled=(status == "verificado"),
+                    ):
+                        try:
+                            _reg_verif(
+                                cnpj_atual, item["sigla"],
+                                STATUS_VERIFICACAO_OK,
+                                verificado_por=quem,
+                                observacao=(_obs or None),
+                            )
+                            st.success("Salvo!")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro: {exc}")
+                with bcol2:
+                    if st.button(
+                        "⛔ N/A",
+                        key=f"{key_pref}_na",
+                        use_container_width=True,
+                        disabled=(status == "nao_se_aplica"),
+                        help="Confirmei que não se aplica a esta empresa.",
+                    ):
+                        try:
+                            _reg_verif(
+                                cnpj_atual, item["sigla"],
+                                STATUS_VERIFICACAO_NA,
+                                verificado_por=quem,
+                                observacao=(_obs or None),
+                            )
+                            st.success("Salvo!")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro: {exc}")
+                with bcol3:
+                    if st.button(
+                        "🚨 Problema",
+                        key=f"{key_pref}_pb",
+                        use_container_width=True,
+                        disabled=(status == "problema"),
+                        help="Encontrei pendência/irregularidade.",
+                    ):
+                        try:
+                            _reg_verif(
+                                cnpj_atual, item["sigla"],
+                                STATUS_VERIFICACAO_PROBLEMA,
+                                verificado_por=quem,
+                                observacao=(_obs or None),
+                            )
+                            st.warning("Marcado como problema.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro: {exc}")
+                with bcol4:
+                    if st.button(
+                        "🔄 Resetar",
+                        key=f"{key_pref}_rst",
+                        use_container_width=True,
+                        disabled=(verif is None),
+                        help="Apaga a verificação e volta a aparecer "
+                             "como pendente.",
+                    ):
+                        try:
+                            _rm_verif(cnpj_atual, item["sigla"])
+                            st.info("Resetado.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Erro: {exc}")
+
     st.divider()
+
+    # Resumo do progresso
+    if cnpj_atual:
+        _ok = sum(1 for x in cl
+                  if (x.get("verificacao") or {}).get("status")
+                  == "verificado")
+        _na = sum(1 for x in cl
+                  if (x.get("verificacao") or {}).get("status")
+                  == "nao_se_aplica")
+        _pb = sum(1 for x in cl
+                  if (x.get("verificacao") or {}).get("status")
+                  == "problema")
+        _pd = len(cl) - _ok - _na - _pb
+        st.markdown(
+            f"**Progresso:** ✅ {_ok} verificados · "
+            f"⛔ {_na} N/A · 🚨 {_pb} problemas · "
+            f"🔴/🟡 {_pd} pendentes de **{len(cl)} órgãos**"
+        )
+
     st.caption(
         f"Análise gerada em {rel.get('data_analise', '—')} · "
         f"{rel.get('total_cnaes', 0)} CNAEs cruzados · "
