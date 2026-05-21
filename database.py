@@ -528,6 +528,39 @@ DDL = [
         atualizado_em TEXT DEFAULT (datetime('now', 'localtime'))
     );
     """,
+    # Cache de consulta CNPJ (BrasilAPI / ReceitaWS). Evita bater de
+    # novo na API toda vez que abrir o relatório da mesma empresa.
+    # TTL padrão de 30 dias — a Receita raramente muda CNAE/situação
+    # mais rápido que isso.
+    """
+    CREATE TABLE IF NOT EXISTS consultas_cnpj_cache (
+        cnpj          TEXT PRIMARY KEY,
+        dados_json    TEXT NOT NULL,
+        consultado_em TEXT DEFAULT (datetime('now', 'localtime')),
+        fonte         TEXT
+    );
+    """,
+    # Catálogo central de órgãos oficiais (federal/estadual/municipal)
+    # com link de consulta e link de cadastro. Usado pra montar o
+    # passo-a-passo "onde verificar / como se inscrever".
+    """
+    CREATE TABLE IF NOT EXISTS orgaos_oficiais (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        sigla         TEXT NOT NULL,
+        nome          TEXT NOT NULL,
+        categoria     TEXT,
+        esfera        TEXT,
+        uf            TEXT,
+        municipio     TEXT,
+        descricao     TEXT,
+        link_consulta TEXT,
+        link_cadastro TEXT,
+        contato       TEXT,
+        observacoes   TEXT,
+        atualizado_em TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(sigla, uf)
+    );
+    """,
     """
     CREATE TABLE IF NOT EXISTS cnae_verificacao (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3366,6 +3399,157 @@ def listar_jwts_gestta_ativos() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+# ====================================================================
+# Cache de consulta CNPJ
+# ====================================================================
+def cache_cnpj_get(cnpj: str, max_idade_dias: int = 30) -> dict | None:
+    """Lê o cache de CNPJ se for recente. Retorna None se não houver."""
+    import json
+    cnpj = "".join(c for c in (cnpj or "") if c.isdigit())
+    if not cnpj:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT dados_json, consultado_em FROM consultas_cnpj_cache "
+            "WHERE cnpj = ?",
+            (cnpj,),
+        ).fetchone()
+        if not r:
+            return None
+        # Checa idade
+        from datetime import datetime, timedelta
+        try:
+            quando = datetime.fromisoformat(
+                str(dict(r)["consultado_em"]).replace(" ", "T"))
+        except Exception:
+            return None
+        if datetime.now() - quando > timedelta(days=max_idade_dias):
+            return None
+        try:
+            return json.loads(dict(r)["dados_json"])
+        except Exception:
+            return None
+
+
+def cache_cnpj_set(cnpj: str, dados: dict) -> None:
+    """Grava/atualiza o cache de uma consulta CNPJ."""
+    import json
+    cnpj = "".join(c for c in (cnpj or "") if c.isdigit())
+    if not cnpj or not dados:
+        return
+    payload = json.dumps(dados, ensure_ascii=False)
+    fonte = dados.get("fonte", "")
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT cnpj FROM consultas_cnpj_cache WHERE cnpj = ?",
+            (cnpj,),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                "UPDATE consultas_cnpj_cache SET dados_json = ?, "
+                "consultado_em = datetime('now', 'localtime'), fonte = ? "
+                "WHERE cnpj = ?",
+                (payload, fonte, cnpj),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO consultas_cnpj_cache (cnpj, dados_json, fonte) "
+                "VALUES (?, ?, ?)",
+                (cnpj, payload, fonte),
+            )
+
+
+# ====================================================================
+# Catálogo de órgãos oficiais
+# ====================================================================
+def upsert_orgao_oficial(
+    sigla: str, nome: str, *,
+    categoria: str | None = None,
+    esfera: str | None = None,
+    uf: str | None = None,
+    municipio: str | None = None,
+    descricao: str | None = None,
+    link_consulta: str | None = None,
+    link_cadastro: str | None = None,
+    contato: str | None = None,
+    observacoes: str | None = None,
+) -> None:
+    """Insere ou atualiza um órgão no catálogo (chave: sigla + uf)."""
+    sigla = (sigla or "").strip().upper()
+    uf_norm = (uf or "").strip().upper() or None
+    if not sigla or not nome:
+        raise ValueError("Sigla e nome são obrigatórios.")
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT id FROM orgaos_oficiais WHERE sigla = ? AND "
+            "COALESCE(uf, '') = COALESCE(?, '')",
+            (sigla, uf_norm),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                """UPDATE orgaos_oficiais SET
+                       nome = ?, categoria = ?, esfera = ?,
+                       municipio = ?, descricao = ?,
+                       link_consulta = ?, link_cadastro = ?,
+                       contato = ?, observacoes = ?,
+                       atualizado_em = datetime('now', 'localtime')
+                     WHERE id = ?""",
+                (nome, categoria, esfera, municipio, descricao,
+                 link_consulta, link_cadastro, contato, observacoes,
+                 dict(existe)["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO orgaos_oficiais
+                     (sigla, nome, categoria, esfera, uf, municipio,
+                      descricao, link_consulta, link_cadastro, contato,
+                      observacoes)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sigla, nome, categoria, esfera, uf_norm, municipio,
+                 descricao, link_consulta, link_cadastro, contato,
+                 observacoes),
+            )
+
+
+def buscar_orgao(sigla: str, uf: str | None = None) -> dict | None:
+    sigla = (sigla or "").strip().upper()
+    uf_norm = (uf or "").strip().upper() or None
+    if not sigla:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM orgaos_oficiais WHERE sigla = ? AND "
+            "COALESCE(uf, '') = COALESCE(?, '')",
+            (sigla, uf_norm),
+        ).fetchone()
+        if r:
+            return dict(r)
+        # Fallback: busca sem UF (versão federal genérica)
+        if uf_norm:
+            r2 = conn.execute(
+                "SELECT * FROM orgaos_oficiais WHERE sigla = ? AND "
+                "uf IS NULL LIMIT 1",
+                (sigla,),
+            ).fetchone()
+            return dict(r2) if r2 else None
+        return None
+
+
+def listar_orgaos(categoria: str | None = None,
+                  esfera: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM orgaos_oficiais WHERE 1=1"
+    params: list = []
+    if categoria:
+        sql += " AND categoria = ?"
+        params.append(categoria)
+    if esfera:
+        sql += " AND esfera = ?"
+        params.append(esfera)
+    sql += " ORDER BY categoria, esfera, sigla, COALESCE(uf, '')"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+
 def obter_jwt_gestta_efetivo(email: str | None = None) -> str:
     """Devolve o JWT GESTTA mais apropriado.
 
@@ -3826,6 +4010,217 @@ def analisar_cnae(codigo: str) -> dict:
     out["verificacao"] = ult
 
     return out
+
+
+def analisar_empresa_completa(
+    cnpj_or_dados, *, usar_cache: bool = True,
+) -> dict:
+    """Análise completa de uma empresa: consulta CNPJ + roda
+    analisar_cnae em cada CNAE (principal + secundários) + consolida.
+
+    Aceita:
+      - string CNPJ (vai consultar API) — usa cache local se recente
+      - dict já com os dados da API (pula a consulta)
+
+    Retorna:
+      {
+        "empresa": {... dados Receita ...},
+        "is_nova": False,
+        "cnae_principal_analise": {...},
+        "cnaes_secundarios_analise": [{...}, ...],
+        "risco_consolidado": "BAIXO|MÉDIO|ALTO",
+        "checklist": [
+            {"orgao": "ANVISA", "obrigatorio": True|False,
+             "motivo": "...", "link_consulta": "...", "link_cadastro": "...",
+             "status_sugerido": "OBRIGATORIO|VERIFICAR|N/A"},
+            ...
+        ],
+        "alertas_globais": [...],
+        "total_cnaes": N,
+        "data_analise": "ISO",
+      }
+    """
+    from datetime import datetime as _dt
+
+    # 1) Consulta CNPJ (ou recebe dados prontos)
+    if isinstance(cnpj_or_dados, dict):
+        dados = cnpj_or_dados
+        cnpj_lim = dados.get("cnpj", "")
+    else:
+        from utils.cnpj_api import (
+            consultar_cnpj, limpar_cnpj,
+        )
+        cnpj_lim = limpar_cnpj(cnpj_or_dados)
+        dados = None
+        if usar_cache:
+            dados = cache_cnpj_get(cnpj_lim)
+        if not dados:
+            dados = consultar_cnpj(cnpj_lim)
+            cache_cnpj_set(cnpj_lim, dados)
+
+    # 2) Roda analisar_cnae em cada CNAE
+    cnae_pr = (dados.get("cnae_principal") or {}).get("codigo", "")
+    cnaes_sec = [c.get("codigo", "")
+                 for c in (dados.get("cnaes_secundarios") or [])
+                 if c.get("codigo")]
+
+    analise_pr = analisar_cnae(cnae_pr) if cnae_pr else None
+    analises_sec = [analisar_cnae(c) for c in cnaes_sec]
+
+    todas_analises = [analise_pr] + analises_sec
+    todas_analises = [a for a in todas_analises if a]
+
+    # 3) Consolida risco — o maior risco entre todos os CNAEs
+    ordem_risco = {"BAIXO": 1, "MÉDIO": 2, "ALTO": 3}
+    risco_top = "BAIXO"
+    for a in todas_analises:
+        if ordem_risco.get(a["risco_consolidado"], 0) > \
+                ordem_risco.get(risco_top, 0):
+            risco_top = a["risco_consolidado"]
+
+    # 4) Monta checklist agregado por órgão (deduplica)
+    checklist: dict[str, dict] = {}
+    uf = (dados.get("endereco") or {}).get("uf", "SP") or "SP"
+
+    def _add(sigla: str, motivo: str, *,
+             obrigatorio: bool = True, uf_override: str | None = None):
+        key = sigla.upper()
+        if key in checklist:
+            # mantém o "obrigatório" mais forte
+            checklist[key]["obrigatorio"] = (
+                checklist[key]["obrigatorio"] or obrigatorio
+            )
+            if motivo not in checklist[key]["motivos"]:
+                checklist[key]["motivos"].append(motivo)
+            return
+        orgao = buscar_orgao(sigla, uf_override or uf)
+        checklist[key] = {
+            "sigla": key,
+            "nome": (orgao or {}).get("nome", sigla),
+            "obrigatorio": obrigatorio,
+            "motivos": [motivo],
+            "link_consulta": (orgao or {}).get("link_consulta") or "",
+            "link_cadastro": (orgao or {}).get("link_cadastro") or "",
+            "descricao": (orgao or {}).get("descricao") or "",
+            "categoria": (orgao or {}).get("categoria") or "",
+            "esfera": (orgao or {}).get("esfera") or "",
+        }
+
+    # Sempre presentes (cadastrais)
+    _add("RFB", "CNPJ obrigatório pra qualquer PJ.")
+    _add("REDESIM", "Portal único pra abertura/alteração/baixa.")
+
+    # Por CNAE
+    for a in todas_analises:
+        cod_a = a.get("codigo") or "?"
+        if a.get("anvisa") and a["anvisa"].get("exige_anvisa"):
+            _add("ANVISA",
+                 f"CNAE {cod_a} exige autorização ANVISA (AFE/AE).")
+        if a.get("vigilancia") and a["vigilancia"].get("exige_licenca"):
+            _add("CVS-SP",
+                 f"CNAE {cod_a} exige Licença Sanitária estadual.",
+                 uf_override="SP")
+            _add("COVISA-SP",
+                 f"CNAE {cod_a} pode exigir Licença Sanitária "
+                 f"municipal (SP capital).",
+                 obrigatorio=False, uf_override="SP")
+        if a.get("bombeiros") and a["bombeiros"].get("exige_avcb"):
+            _add("CBPMESP",
+                 f"CNAE {cod_a} exige AVCB/CLCB pelo IT-01.",
+                 uf_override="SP")
+        if a.get("ambiental") and a["ambiental"].get("exige_licenca"):
+            _add("CETESB",
+                 f"CNAE {cod_a} exige licenciamento ambiental.",
+                 uf_override="SP")
+            _add("IBAMA",
+                 f"CNAE {cod_a} pode constar no CTF/APP do IBAMA.",
+                 obrigatorio=False)
+        for c in (a.get("conselhos") or []):
+            sigla_c = (c.get("conselho_sigla") or "").upper()
+            if sigla_c:
+                _add(sigla_c,
+                     f"CNAE {cod_a}: PJ precisa de registro no "
+                     f"{sigla_c} ({c.get('observacao') or ''}).".strip())
+        for r in (a.get("outros_registros") or []):
+            sigla_r = (r.get("orgao") or "").upper()
+            if sigla_r:
+                _add(sigla_r,
+                     f"CNAE {cod_a}: {r.get('observacao') or 'registro'}.")
+        for h in (a.get("habilitacoes_profissionais") or []):
+            sigla_h = (h.get("conselho_sigla") or "").upper()
+            if sigla_h:
+                _add(sigla_h,
+                     f"CNAE {cod_a}: atividade '{h.get('atividade') or '—'}'"
+                     f" exige profissional habilitado.",
+                     obrigatorio=False)
+
+    # Simples Nacional — alerta se a empresa for ME/EPP e tiver CNAE
+    # potencialmente vedado (alta complexidade)
+    if (dados.get("porte") in {"ME", "EPP"} and
+            dados.get("regime_tributario") == "SIMPLES"):
+        _add("SIMPLES",
+             "Empresa optante pelo Simples — confirme se TODOS os CNAEs "
+             "estão na lista permitida.",
+             obrigatorio=False)
+
+    # 5) Alertas globais
+    alertas = []
+    if dados.get("situacao") and dados["situacao"] != "ATIVA":
+        alertas.append(
+            f"⚠️ Situação cadastral: {dados['situacao']} — "
+            f"{dados.get('situacao_motivo', '')}"
+        )
+    if not todas_analises:
+        alertas.append(
+            "⚠️ Nenhum CNAE encontrado na consulta. Verifique no portal "
+            "da Receita."
+        )
+
+    return {
+        "empresa": dados,
+        "is_nova": False,
+        "cnae_principal_analise": analise_pr,
+        "cnaes_secundarios_analise": analises_sec,
+        "risco_consolidado": risco_top,
+        "checklist": sorted(
+            checklist.values(),
+            key=lambda x: (not x["obrigatorio"], x["categoria"], x["sigla"]),
+        ),
+        "alertas_globais": alertas,
+        "total_cnaes": len(todas_analises),
+        "data_analise": _dt.now().isoformat(timespec="seconds"),
+    }
+
+
+def analisar_cnaes_pretendidos(
+    cnaes: list[str], *, uf: str = "SP",
+) -> dict:
+    """Análise pra empresa NOVA — recebe lista de CNAEs pretendidos
+    e devolve o mesmo formato de relatório, sem dados de Receita.
+
+    Use isso pra responder "o cliente quer abrir uma empresa com esses
+    CNAEs, o que precisa preparar antes?"
+    """
+    from datetime import datetime as _dt
+
+    dados_fake = {
+        "cnpj": "",
+        "razao_social": "(empresa nova — ainda sem CNPJ)",
+        "situacao": "PRÉ-ABERTURA",
+        "endereco": {"uf": uf},
+        "cnae_principal": ({"codigo": cnaes[0], "descricao": ""}
+                            if cnaes else {}),
+        "cnaes_secundarios": [
+            {"codigo": c, "descricao": ""} for c in cnaes[1:]
+        ],
+        "porte": "ME",
+        "regime_tributario": None,
+    }
+    # Reusa o motor
+    rel = analisar_empresa_completa(dados_fake, usar_cache=False)
+    rel["is_nova"] = True
+    rel["data_analise"] = _dt.now().isoformat(timespec="seconds")
+    return rel
 
 
 # ---------------------------------------------------------------------------

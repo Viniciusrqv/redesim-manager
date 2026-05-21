@@ -5590,6 +5590,299 @@ def _card_area(icone: str, titulo: str, cor: str,
     """
 
 
+# =====================================================================
+# WIZARD: Empresa existente / Empresa nova
+# =====================================================================
+def _wizard_empresa_existente():
+    """Recebe CNPJ → consulta BrasilAPI → cruza com base local."""
+    st.markdown(
+        "**Tem CNPJ?** Cole abaixo. Eu busco na Receita, leio o CNAE "
+        "principal e secundários, e gero um **checklist completo** do "
+        "que essa empresa precisa estar cadastrada (com link oficial "
+        "pra cada órgão)."
+    )
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        cnpj_in = st.text_input(
+            "CNPJ",
+            placeholder="00.000.000/0000-00",
+            key="wiz_cnpj_input",
+        ).strip()
+    with c2:
+        st.markdown("<div style='height:28px'></div>",
+                    unsafe_allow_html=True)
+        bt_analisar = st.button(
+            "🔍 Analisar",
+            type="primary", use_container_width=True,
+            key="btn_wiz_analisar_cnpj",
+        )
+
+    if not cnpj_in:
+        st.info("Cole o CNPJ pra começar.")
+        return
+
+    if not bt_analisar and st.session_state.get(
+            "_wiz_last_cnpj") != cnpj_in:
+        return
+
+    st.session_state["_wiz_last_cnpj"] = cnpj_in
+
+    from utils.cnpj_api import (
+        consultar_cnpj, CNPJNaoEncontrado, CNPJApiError,
+        cnpj_valido, formatar_cnpj,
+    )
+    from database import (
+        analisar_empresa_completa, cache_cnpj_get,
+    )
+
+    if not cnpj_valido(cnpj_in):
+        st.error(
+            "CNPJ inválido (dígitos verificadores não batem). "
+            "Confira o número."
+        )
+        return
+
+    # Mostra se vai usar cache
+    cache_hit = cache_cnpj_get(cnpj_in)
+    if cache_hit:
+        st.caption(
+            f"⚡ Usando cache local de "
+            f"`{cache_hit.get('consultado_em', '—')[:10]}` "
+            f"(fonte: {cache_hit.get('fonte', '—')}). "
+            f"Use o botão 'Recarregar do zero' pra forçar nova consulta."
+        )
+        recarregar = st.button(
+            "🔄 Recarregar do zero (ignora cache)",
+            key="btn_wiz_recarregar_cnpj",
+        )
+        if recarregar:
+            try:
+                dados = consultar_cnpj(cnpj_in)
+                from database import cache_cnpj_set
+                cache_cnpj_set(cnpj_in, dados)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Falha ao recarregar: {exc}")
+
+    with st.spinner("Consultando Receita e analisando CNAEs..."):
+        try:
+            rel = analisar_empresa_completa(cnpj_in)
+        except CNPJNaoEncontrado:
+            st.error(
+                f"❌ CNPJ {formatar_cnpj(cnpj_in)} não encontrado "
+                "na base da Receita."
+            )
+            return
+        except CNPJApiError as exc:
+            st.error(f"Falha ao consultar: {exc}")
+            return
+        except Exception as exc:
+            st.error(f"Erro inesperado: {exc}")
+            return
+
+    _render_relatorio_empresa(rel)
+
+
+def _wizard_empresa_nova():
+    """Recebe lista de CNAEs pretendidos e mostra checklist pré-abertura."""
+    st.markdown(
+        "**Empresa ainda não existe** — você quer abrir e está pensando "
+        "em quais CNAEs colocar. Liste abaixo (um por linha) e eu mostro "
+        "tudo que precisa preparar **antes** de protocolar a abertura."
+    )
+    cnaes_in = st.text_area(
+        "CNAEs pretendidos (um por linha — principal primeiro)",
+        placeholder=(
+            "ex.:\n4711-3/02\n4729-6/99\n9602-5/01"
+        ),
+        height=120,
+        key="wiz_cnaes_novos_input",
+    ).strip()
+
+    uf_in = st.selectbox(
+        "UF onde a empresa vai abrir",
+        ["SP", "RJ", "MG", "PR", "SC", "RS", "BA", "PE", "CE",
+         "GO", "DF", "ES", "MS", "MT", "PA", "MA", "RN", "AL",
+         "SE", "PI", "PB", "AM", "RO", "AC", "RR", "AP", "TO"],
+        index=0,
+        key="wiz_nova_uf",
+    )
+    bt_nova = st.button(
+        "📋 Gerar checklist de pré-abertura",
+        type="primary", use_container_width=True,
+        key="btn_wiz_nova",
+    )
+
+    if not bt_nova:
+        return
+
+    lista = [
+        ln.strip() for ln in cnaes_in.split("\n") if ln.strip()
+    ]
+    if not lista:
+        st.warning("Liste pelo menos 1 CNAE.")
+        return
+
+    from database import analisar_cnaes_pretendidos
+    with st.spinner("Analisando CNAEs e montando checklist..."):
+        try:
+            rel = analisar_cnaes_pretendidos(lista, uf=uf_in)
+        except Exception as exc:
+            st.error(f"Erro: {exc}")
+            return
+
+    _render_relatorio_empresa(rel)
+
+
+def _render_relatorio_empresa(rel: dict):
+    """Renderiza o relatório completo de uma empresa (nova ou existente)."""
+    emp = rel.get("empresa") or {}
+    is_nova = rel.get("is_nova", False)
+
+    # ===== HEADER DA EMPRESA =====
+    if is_nova:
+        st.markdown(
+            "<div class='cnae-header'>"
+            "<div class='cnae-label'>EMPRESA NOVA — Pré-abertura</div>"
+            "<div class='cnae-codigo'>(ainda sem CNPJ)</div>"
+            f"<div class='cnae-desc'>UF pretendida: "
+            f"<b>{(emp.get('endereco') or {}).get('uf', '?')}</b> · "
+            f"{rel.get('total_cnaes', 0)} CNAEs analisados</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        from utils.cnpj_api import formatar_cnpj
+        situacao = emp.get("situacao", "?")
+        cor_situacao = {
+            "ATIVA": "#047857",
+            "BAIXADA": "#DC2626",
+            "INAPTA": "#DC2626",
+            "SUSPENSA": "#D97706",
+            "NULA": "#DC2626",
+        }.get(situacao, "#000000")
+        end = emp.get("endereco") or {}
+        endereco_txt = (
+            f"{end.get('logradouro', '')}, {end.get('numero', '')} · "
+            f"{end.get('bairro', '')} · {end.get('municipio', '')}/"
+            f"{end.get('uf', '')} · CEP {end.get('cep', '')}"
+        )
+        st.markdown(
+            f"<div class='cnae-header'>"
+            f"<div class='cnae-label'>CNPJ {formatar_cnpj(emp.get('cnpj', ''))}"
+            f" · {emp.get('porte', '')}"
+            f" · {emp.get('regime_tributario') or 'regime n/d'}</div>"
+            f"<div class='cnae-codigo'>{emp.get('razao_social', '—')}</div>"
+            f"<div class='cnae-desc'>"
+            f"{('<b>' + emp.get('nome_fantasia', '') + '</b> · ') if emp.get('nome_fantasia') else ''}"
+            f"<span style='color:{cor_situacao}; font-weight:600;'>"
+            f"{situacao}</span> · "
+            f"abertura: {emp.get('data_abertura', '—')} · "
+            f"{emp.get('natureza_juridica', '—')}<br>"
+            f"<small>{endereco_txt}</small>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ===== ALERTAS GLOBAIS =====
+    for a in rel.get("alertas_globais", []):
+        st.warning(a)
+
+    # ===== RISCO CONSOLIDADO =====
+    risco = rel.get("risco_consolidado", "INDEFINIDO")
+    cor_risco = {
+        "BAIXO": "#047857",
+        "MÉDIO": "#D97706",
+        "ALTO": "#DC2626",
+    }.get(risco, "#1A2A4A")
+    st.markdown(
+        f"#### 🎯 Risco consolidado: "
+        f"<span style='color:{cor_risco}; font-weight:700;'>{risco}</span>",
+        unsafe_allow_html=True,
+    )
+
+    # ===== CNAES =====
+    if rel.get("cnae_principal_analise"):
+        a = rel["cnae_principal_analise"]
+        st.markdown(
+            f"**🥇 CNAE principal:** `{a.get('codigo', '—')}` — "
+            f"{a.get('descricao', '—')}  · risco "
+            f"**{a.get('risco_consolidado', '—')}**"
+        )
+    secs = rel.get("cnaes_secundarios_analise") or []
+    if secs:
+        with st.expander(
+            f"🥈 {len(secs)} CNAE(s) secundário(s)",
+            expanded=False,
+        ):
+            for a in secs:
+                st.markdown(
+                    f"- `{a.get('codigo', '—')}` — "
+                    f"{a.get('descricao', '—')} "
+                    f"(risco **{a.get('risco_consolidado', '—')}**)"
+                )
+
+    # ===== CHECKLIST POR ÓRGÃO =====
+    st.markdown("### 📋 Checklist de cadastros / licenças")
+    cl = rel.get("checklist", [])
+    if not cl:
+        st.info("Nenhum órgão regulador identificado pelos CNAEs.")
+        return
+
+    # Cabeçalho com legenda
+    st.caption(
+        "🔴 **Obrigatório** — você precisa cadastrar/manter ativo · "
+        "🟡 **Verificar** — pode aplicar dependendo da operação · "
+        "Clique nos links pra abrir o portal oficial."
+    )
+
+    for item in cl:
+        marcador = "🔴" if item["obrigatorio"] else "🟡"
+        esfera_emoji = {
+            "federal": "🇧🇷",
+            "estadual": "🏛️",
+            "municipal": "🏙️",
+        }.get(item.get("esfera"), "")
+
+        with st.container(border=True):
+            st.markdown(
+                f"**{marcador} {item['sigla']}** {esfera_emoji} — "
+                f"{item['nome']}"
+            )
+            if item.get("descricao"):
+                st.caption(item["descricao"])
+            st.markdown("**Por que aparece aqui:**")
+            for m in item.get("motivos", []):
+                st.markdown(f"- {m}")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                if item.get("link_consulta"):
+                    st.link_button(
+                        "🔍 Consultar situação",
+                        item["link_consulta"],
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption("(sem link de consulta cadastrado)")
+            with cc2:
+                if item.get("link_cadastro"):
+                    st.link_button(
+                        "📝 Cadastrar / fazer registro",
+                        item["link_cadastro"],
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption("(sem link de cadastro cadastrado)")
+
+    st.divider()
+    st.caption(
+        f"Análise gerada em {rel.get('data_analise', '—')} · "
+        f"{rel.get('total_cnaes', 0)} CNAEs cruzados · "
+        f"{len(cl)} órgãos identificados."
+    )
+
+
 def pagina_consulta_cnae():
     st.header("🔬 Consultor de CNAE")
     st.caption(
@@ -5599,6 +5892,30 @@ def pagina_consulta_cnae():
         "(links abaixo da consulta) antes de orientar o cliente.**"
     )
 
+    # =====================================================
+    # Wizard: Nova empresa vs Existente vs CNAE individual
+    # =====================================================
+    tab_cnpj, tab_nova, tab_cnae = st.tabs([
+        "🔎 Empresa existente (CNPJ)",
+        "🆕 Empresa nova (vai abrir)",
+        "🔬 CNAE individual",
+    ])
+
+    # -------- Aba 1: empresa existente --------
+    with tab_cnpj:
+        _wizard_empresa_existente()
+
+    # -------- Aba 2: empresa nova --------
+    with tab_nova:
+        _wizard_empresa_nova()
+
+    # -------- Aba 3: CNAE individual (fluxo antigo) --------
+    with tab_cnae:
+        _consulta_cnae_individual()
+
+
+def _consulta_cnae_individual():
+    """Fluxo clássico: digita 1 CNAE e ve análise completa."""
     col_in, col_btn = st.columns([3, 1])
     with col_in:
         cnae_input = st.text_input(
@@ -5609,7 +5926,8 @@ def pagina_consulta_cnae():
     with col_btn:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         consultar = st.button("🔍 Consultar", type="primary",
-                              use_container_width=True)
+                              use_container_width=True,
+                              key="btn_consultar_cnae_individual")
 
     if not cnae_input or not (consultar or
                                st.session_state.get("_cnae_last_input") == cnae_input):
