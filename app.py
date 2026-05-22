@@ -96,7 +96,9 @@ st.set_page_config(
     page_title="REDESIM Manager · CSM Contabilidade",
     page_icon="🔷",
     layout="wide",
-    initial_sidebar_state="expanded",
+    # "auto" = sidebar aberta no desktop, fechada no mobile.
+    # Sem isso a sidebar ocupa metade da tela no celular e fica ruim.
+    initial_sidebar_state="auto",
 )
 
 # ====================================================================

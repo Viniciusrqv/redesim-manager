@@ -268,6 +268,117 @@ a:hover { color: #1A41B3; }
   border-radius: 8px;
 }
 
+/* =====================================================================
+   RESPONSIVO PRA CELULAR (max-width: 768px)
+   ===================================================================== */
+@media (max-width: 768px) {
+  /* Reduz padding global pra ganhar espaco util */
+  .main .block-container {
+    padding-top: 1rem !important;
+    padding-left: 0.6rem !important;
+    padding-right: 0.6rem !important;
+  }
+
+  /* Headers menores no celular */
+  h1 { font-size: 20px !important; }
+  h2 { font-size: 17px !important; }
+  h3 { font-size: 15px !important; }
+
+  /* KPI cards: empilha em 2 colunas em vez de 4 */
+  .kpi-card {
+    padding: 12px 14px !important;
+    min-height: auto !important;
+  }
+  .kpi-icon {
+    font-size: 18px !important;
+    margin-bottom: 4px !important;
+  }
+  .kpi-label {
+    font-size: 10px !important;
+    letter-spacing: .4px;
+  }
+  .kpi-value {
+    font-size: 22px !important;
+  }
+  .kpi-sub {
+    font-size: 10px !important;
+    margin-top: 3px !important;
+  }
+
+  /* Mini-cards: padding e fontes menores */
+  .mini-card {
+    padding: 10px 10px !important;
+    min-height: auto !important;
+  }
+  .mini-card .mc-icon { font-size: 14px !important; }
+  .mini-card .mc-label {
+    font-size: 9px !important;
+    letter-spacing: .3px;
+    margin: 2px 0 4px !important;
+  }
+  .mini-card .mc-value { font-size: 18px !important; }
+  .mini-card .mc-sub { font-size: 9px !important; }
+
+  /* Header de CNAE consultado */
+  .cnae-header {
+    padding: 14px 16px !important;
+  }
+  .cnae-header .cnae-codigo {
+    font-size: 20px !important;
+    margin: 4px 0 6px !important;
+  }
+  .cnae-header .cnae-desc { font-size: 13px !important; }
+  .cnae-header .cnae-badge {
+    font-size: 10px !important;
+    padding: 4px 10px !important;
+  }
+
+  /* Cards de area (CNAE consultor) */
+  .card-area {
+    padding: 12px !important;
+    min-height: auto !important;
+  }
+  .card-area-titulo { font-size: 12px !important; }
+  .card-area-body { font-size: 12px !important; }
+
+  /* Botoes ocupam toda a largura no celular */
+  .stButton > button {
+    font-size: 13px !important;
+  }
+
+  /* Barra de saude um pouquinho mais grossa pra dar pra ver */
+  .health-bar {
+    height: 8px !important;
+  }
+  .health-legend {
+    font-size: 11px !important;
+    gap: 10px !important;
+    flex-wrap: wrap !important;
+  }
+
+  /* Tabela do dataframe scroll horizontal automatico */
+  [data-testid="stDataFrame"] {
+    overflow-x: auto !important;
+  }
+
+  /* Sidebar quando aberta no mobile, ocupa quase toda tela */
+  section[data-testid="stSidebar"] {
+    min-width: 280px !important;
+    max-width: 85vw !important;
+  }
+}
+
+/* Tela muito pequena (celular pequeno em retrato) */
+@media (max-width: 480px) {
+  .main .block-container {
+    padding-left: 0.4rem !important;
+    padding-right: 0.4rem !important;
+  }
+  h1 { font-size: 18px !important; }
+  .kpi-value { font-size: 18px !important; }
+  .mini-card .mc-value { font-size: 16px !important; }
+}
+
 /* ----- Forca preto em todos os textos cinzas do Streamlit ----- */
 /* st.caption() renderiza em cinza claro por padrao - escurece */
 [data-testid="stCaptionContainer"],
