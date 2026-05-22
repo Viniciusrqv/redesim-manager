@@ -4267,6 +4267,7 @@ def analisar_cnae(codigo: str) -> dict:
         "conselhos": [],
         "outros_registros": [],
         "habilitacoes_profissionais": [],
+        "regras_oficiais": [],   # respostas determinísticas com base legal
         "cgsim": None,
         "risco_consolidado": "INDEFINIDO",
         "alertas": [],
@@ -4370,6 +4371,20 @@ def analisar_cnae(codigo: str) -> dict:
                     f"Habilitação ({h.get('conselho_sigla') or 'profissional'}): "
                     f"{h['fonte']}"
                 )
+
+    # 7d. REGRAS OFICIAIS determinísticas (a fonte de CERTEZA do sistema).
+    # Quando cadastradas pra esse CNAE, dão a resposta definitiva
+    # OBRIGATÓRIO / DISPENSADO / CONDICIONAL com base legal e link.
+    try:
+        out["regras_oficiais"] = buscar_regras_cnae(cnae)
+        for r in out["regras_oficiais"]:
+            if r.get("base_legal"):
+                out["fontes"].append(
+                    f"Regra oficial ({r.get('orgao_sigla')}): "
+                    f"{r['base_legal']}"
+                )
+    except Exception:
+        out["regras_oficiais"] = []
 
     # 8. CGSIM
     try:

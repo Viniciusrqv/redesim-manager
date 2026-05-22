@@ -6297,6 +6297,96 @@ def _consulta_cnae_individual():
       </div>
     """, unsafe_allow_html=True)
 
+    # ============ REGRAS OFICIAIS (resposta determinística) ============
+    # Quando há regra cadastrada na Base de Regras, mostramos AQUI no
+    # topo com a resposta definitiva e a base legal. Isso é a CERTEZA
+    # do sistema — sem isso, tudo embaixo é "provavelmente / verifique".
+    regras_top = analise.get("regras_oficiais") or []
+    if regras_top:
+        st.markdown(
+            "### ✅ Respostas oficiais (base curada CSM)"
+        )
+        st.caption(
+            "Estas respostas vêm da base de regras com base legal "
+            "verificável. **Use estas no atendimento ao cliente.**"
+        )
+        for r in regras_top:
+            _badge_cor = {
+                "sim": "#DC2626",
+                "nao": "#047857",
+                "condicional": "#D97706",
+            }.get(r.get("obrigatoriedade"), "#1A2A4A")
+            _badge_txt = {
+                "sim": "🔴 OBRIGATÓRIO",
+                "nao": "🟢 DISPENSADO",
+                "condicional": "🟡 CONDICIONAL",
+            }.get(r.get("obrigatoriedade"), "❓ INDEFINIDO")
+
+            with st.container(border=True):
+                uf_s = (f" / {r['orgao_uf']}"
+                        if r.get("orgao_uf") else "")
+                st.markdown(
+                    f"<div style='display:flex; "
+                    f"justify-content:space-between; "
+                    f"align-items:center; margin-bottom:6px;'>"
+                    f"<div style='font-size:18px; font-weight:700; "
+                    f"color:#1A2A4A;'>"
+                    f"📌 {r['orgao_sigla']}{uf_s}</div>"
+                    f"<div style='background:{_badge_cor}; "
+                    f"color:#FFFFFF; padding:4px 12px; "
+                    f"border-radius:6px; font-size:12px; "
+                    f"font-weight:700;'>{_badge_txt}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+                if r.get("obrigatoriedade") == "condicional":
+                    if r.get("condicoes_obrigatorio"):
+                        st.markdown(
+                            f"**🔴 Obrigatório quando:** "
+                            f"{r['condicoes_obrigatorio']}"
+                        )
+                    if r.get("condicoes_dispensa"):
+                        st.markdown(
+                            f"**🟢 Dispensado quando:** "
+                            f"{r['condicoes_dispensa']}"
+                        )
+                elif r.get("obrigatoriedade") == "sim":
+                    if r.get("condicoes_obrigatorio"):
+                        st.markdown(r["condicoes_obrigatorio"])
+                elif r.get("obrigatoriedade") == "nao":
+                    if r.get("condicoes_dispensa"):
+                        st.markdown(r["condicoes_dispensa"])
+
+                if r.get("observacoes"):
+                    st.info(f"💡 **Na prática:** {r['observacoes']}")
+
+                if r.get("base_legal"):
+                    link_btn = ""
+                    if r.get("link_lei"):
+                        link_btn = (
+                            f" · [📚 abrir lei oficial]"
+                            f"({r['link_lei']})"
+                        )
+                    st.markdown(
+                        f"📖 **Base legal:** {r['base_legal']}{link_btn}"
+                    )
+                st.caption(
+                    f"Cadastrado por {r.get('autor', '—')} · "
+                    f"última revisão: "
+                    f"{(r.get('data_revisao') or r.get('data_cadastro') or '—')[:10]}"
+                )
+        st.divider()
+    else:
+        # Sem regra na base — avisa explicitamente
+        st.warning(
+            "⚠️ **Sem regra oficial cadastrada na base CSM pra este "
+            "CNAE.** As informações abaixo são da base local "
+            "auxiliar — confirme nas fontes oficiais antes de orientar "
+            "o cliente e, depois, cadastre a regra em "
+            "**📚 Base de Regras** pra não precisar pesquisar de novo."
+        )
+
     # ============ Alertas ============
     for alerta in analise.get("alertas") or []:
         st.warning(f"⚠️ {alerta}")
