@@ -6147,25 +6147,25 @@ def pagina_consulta_cnae():
     )
 
     # =====================================================
-    # Wizard: Nova empresa vs Existente vs CNAE individual
+    # Wizard: CNAE individual primeiro (consulta rápida do dia-a-dia)
     # =====================================================
-    tab_cnpj, tab_nova, tab_cnae = st.tabs([
+    tab_cnae, tab_cnpj, tab_nova = st.tabs([
+        "🔬 CNAE individual",
         "🔎 Empresa existente (CNPJ)",
         "🆕 Empresa nova (vai abrir)",
-        "🔬 CNAE individual",
     ])
 
-    # -------- Aba 1: empresa existente --------
+    # -------- Aba 1: CNAE individual (consulta rápida) --------
+    with tab_cnae:
+        _consulta_cnae_individual()
+
+    # -------- Aba 2: empresa existente --------
     with tab_cnpj:
         _wizard_empresa_existente()
 
-    # -------- Aba 2: empresa nova --------
+    # -------- Aba 3: empresa nova --------
     with tab_nova:
         _wizard_empresa_nova()
-
-    # -------- Aba 3: CNAE individual (fluxo antigo) --------
-    with tab_cnae:
-        _consulta_cnae_individual()
 
 
 def _consulta_cnae_individual():
