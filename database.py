@@ -561,6 +561,38 @@ DDL = [
         UNIQUE(sigla, uf)
     );
     """,
+    # Base de regras OFICIAIS por CNAE × órgão.
+    # Esta é a tabela que dá a CERTEZA — em vez de "provavelmente
+    # precisa de CRECI", responde:
+    #   - obrigatoriedade: 'sim' | 'nao' | 'condicional'
+    #   - condicoes_obrigatorio: descreve QUANDO é obrigatório
+    #   - condicoes_dispensa:    descreve QUANDO é dispensado
+    #   - base_legal: lei/resolução com nº e data
+    #   - link_lei: URL pro PDF/texto da norma
+    # Toda regra é auditável (autor + data + revisão).
+    """
+    CREATE TABLE IF NOT EXISTS cnae_regra_oficial (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnae                    TEXT NOT NULL,
+        orgao_sigla             TEXT NOT NULL,
+        orgao_uf                TEXT,
+        obrigatoriedade         TEXT NOT NULL,
+        condicoes_obrigatorio   TEXT,
+        condicoes_dispensa      TEXT,
+        observacoes             TEXT,
+        base_legal              TEXT,
+        link_lei                TEXT,
+        autor                   TEXT,
+        data_cadastro           TEXT DEFAULT (datetime('now', 'localtime')),
+        data_revisao            TEXT,
+        revisor                 TEXT,
+        UNIQUE(cnae, orgao_sigla, orgao_uf)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_regra_cnae
+    ON cnae_regra_oficial(cnae);
+    """,
     # Histórico de verificações manuais empresa × órgão.
     # Quando você (ou alguém da equipe) abre o portal oficial e
     # confirma que o cadastro/licença da empresa naquele órgão está
@@ -3557,6 +3589,270 @@ def buscar_orgao(sigla: str, uf: str | None = None) -> dict | None:
         return None
 
 
+# ====================================================================
+# Base de regras oficiais (resposta determinística por CNAE × órgão)
+# ====================================================================
+OBRIGATORIEDADE_SIM = "sim"
+OBRIGATORIEDADE_NAO = "nao"
+OBRIGATORIEDADE_CONDICIONAL = "condicional"
+
+OBRIGATORIEDADE_VALORES = {
+    OBRIGATORIEDADE_SIM,
+    OBRIGATORIEDADE_NAO,
+    OBRIGATORIEDADE_CONDICIONAL,
+}
+
+
+def upsert_regra_oficial(
+    cnae: str, orgao_sigla: str, obrigatoriedade: str,
+    *, orgao_uf: str | None = None,
+    condicoes_obrigatorio: str | None = None,
+    condicoes_dispensa: str | None = None,
+    observacoes: str | None = None,
+    base_legal: str | None = None,
+    link_lei: str | None = None,
+    autor: str | None = None,
+    revisor: str | None = None,
+) -> None:
+    """Cadastra/atualiza a regra OFICIAL de um CNAE pra um órgão.
+
+    Esta tabela é o que dá CERTEZA ao sistema. Sem entrada aqui, o
+    checklist mostra apenas "verificar manualmente". Com entrada,
+    mostra a resposta determinística com base legal.
+    """
+    cnae_norm = _normalizar_cnae(cnae)
+    sig = (orgao_sigla or "").strip().upper()
+    uf_norm = (orgao_uf or "").strip().upper() or None
+    obg = (obrigatoriedade or "").strip().lower()
+    if not cnae_norm or not sig:
+        raise ValueError("CNAE e órgão são obrigatórios.")
+    if obg not in OBRIGATORIEDADE_VALORES:
+        raise ValueError(
+            f"obrigatoriedade deve ser 'sim'|'nao'|'condicional', "
+            f"recebido: {obg!r}"
+        )
+    if obg == OBRIGATORIEDADE_CONDICIONAL and not (
+            condicoes_obrigatorio or condicoes_dispensa):
+        raise ValueError(
+            "Regra condicional precisa descrever pelo menos uma das "
+            "condições (obrigatório ou dispensa)."
+        )
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT id FROM cnae_regra_oficial WHERE "
+            "cnae = ? AND orgao_sigla = ? AND "
+            "COALESCE(orgao_uf, '') = COALESCE(?, '')",
+            (cnae_norm, sig, uf_norm),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                """UPDATE cnae_regra_oficial SET
+                       obrigatoriedade = ?,
+                       condicoes_obrigatorio = ?,
+                       condicoes_dispensa = ?,
+                       observacoes = ?,
+                       base_legal = ?,
+                       link_lei = ?,
+                       data_revisao = datetime('now', 'localtime'),
+                       revisor = COALESCE(?, revisor)
+                     WHERE id = ?""",
+                (obg, condicoes_obrigatorio, condicoes_dispensa,
+                 observacoes, base_legal, link_lei,
+                 revisor or autor, dict(existe)["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO cnae_regra_oficial
+                     (cnae, orgao_sigla, orgao_uf, obrigatoriedade,
+                      condicoes_obrigatorio, condicoes_dispensa,
+                      observacoes, base_legal, link_lei, autor)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (cnae_norm, sig, uf_norm, obg,
+                 condicoes_obrigatorio, condicoes_dispensa,
+                 observacoes, base_legal, link_lei, autor),
+            )
+
+
+def buscar_regras_cnae(cnae: str) -> list[dict]:
+    """Lista todas as regras oficiais cadastradas pra um CNAE."""
+    cnae_norm = _normalizar_cnae(cnae)
+    if not cnae_norm:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM cnae_regra_oficial WHERE cnae = ? "
+            "ORDER BY orgao_sigla, COALESCE(orgao_uf, '')",
+            (cnae_norm,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def buscar_regra_especifica(
+    cnae: str, orgao_sigla: str,
+    *, orgao_uf: str | None = None,
+) -> dict | None:
+    cnae_norm = _normalizar_cnae(cnae)
+    sig = (orgao_sigla or "").strip().upper()
+    uf_norm = (orgao_uf or "").strip().upper() or None
+    if not cnae_norm or not sig:
+        return None
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT * FROM cnae_regra_oficial WHERE "
+            "cnae = ? AND orgao_sigla = ? AND "
+            "COALESCE(orgao_uf, '') = COALESCE(?, '')",
+            (cnae_norm, sig, uf_norm),
+        ).fetchone()
+        if r:
+            return dict(r)
+        # Fallback: regra federal (sem UF) quando UF específica não existe
+        if uf_norm:
+            r2 = conn.execute(
+                "SELECT * FROM cnae_regra_oficial WHERE "
+                "cnae = ? AND orgao_sigla = ? AND orgao_uf IS NULL",
+                (cnae_norm, sig),
+            ).fetchone()
+            return dict(r2) if r2 else None
+        return None
+
+
+def remover_regra_oficial(
+    cnae: str, orgao_sigla: str,
+    *, orgao_uf: str | None = None,
+) -> None:
+    cnae_norm = _normalizar_cnae(cnae)
+    sig = (orgao_sigla or "").strip().upper()
+    uf_norm = (orgao_uf or "").strip().upper() or None
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM cnae_regra_oficial WHERE "
+            "cnae = ? AND orgao_sigla = ? AND "
+            "COALESCE(orgao_uf, '') = COALESCE(?, '')",
+            (cnae_norm, sig, uf_norm),
+        )
+
+
+def extrair_cnaes_da_carteira() -> list[dict]:
+    """Escaneia toda a base local procurando CNAEs reais da carteira
+    e devolve ranking por frequência. Fontes:
+
+      1. processo_cnaes  → CNAEs vinculados a processos REDESIM
+      2. consultas_cnpj_cache → CNAEs vindos da Receita (BrasilAPI)
+
+    Retorna:
+      [
+        {"cnae": "4711-3/02", "ocorrencias": 17,
+         "exemplos_cnpj": ["12345678000190", ...]},
+        ...
+      ]
+    """
+    import json
+    contagem: dict[str, dict] = {}
+
+    with get_conn() as conn:
+        # Fonte 1: CNAEs dos processos REDESIM
+        try:
+            rows = conn.execute(
+                "SELECT cnae, COUNT(*) AS n FROM processo_cnaes "
+                "GROUP BY cnae"
+            ).fetchall()
+            for r in rows:
+                c = _normalizar_cnae(dict(r)["cnae"])
+                if not c:
+                    continue
+                contagem.setdefault(c, {
+                    "cnae": c, "ocorrencias": 0,
+                    "exemplos_cnpj": [], "fontes": set()
+                })
+                contagem[c]["ocorrencias"] += int(dict(r)["n"])
+                contagem[c]["fontes"].add("processo_redesim")
+        except Exception:
+            pass
+
+        # Fonte 2: CNAEs do cache de consultas CNPJ
+        try:
+            rows = conn.execute(
+                "SELECT cnpj, dados_json FROM consultas_cnpj_cache"
+            ).fetchall()
+            for r in rows:
+                d = dict(r)
+                cnpj = d.get("cnpj", "")
+                try:
+                    dados = json.loads(d.get("dados_json") or "{}")
+                except Exception:
+                    continue
+                cnaes_aqui = []
+                pr = (dados.get("cnae_principal") or {}).get("codigo")
+                if pr:
+                    cnaes_aqui.append(_normalizar_cnae(pr))
+                for sec in (dados.get("cnaes_secundarios") or []):
+                    c = _normalizar_cnae(sec.get("codigo") or "")
+                    if c:
+                        cnaes_aqui.append(c)
+                for c in cnaes_aqui:
+                    if not c:
+                        continue
+                    contagem.setdefault(c, {
+                        "cnae": c, "ocorrencias": 0,
+                        "exemplos_cnpj": [], "fontes": set()
+                    })
+                    contagem[c]["ocorrencias"] += 1
+                    if (cnpj and
+                            cnpj not in contagem[c]["exemplos_cnpj"] and
+                            len(contagem[c]["exemplos_cnpj"]) < 5):
+                        contagem[c]["exemplos_cnpj"].append(cnpj)
+                    contagem[c]["fontes"].add("consulta_cnpj")
+        except Exception:
+            pass
+
+    # Ordena por ocorrências desc
+    resultado = sorted(
+        contagem.values(),
+        key=lambda x: (-x["ocorrencias"], x["cnae"]),
+    )
+    # Converte sets em listas (json-friendly)
+    for r in resultado:
+        r["fontes"] = sorted(r["fontes"])
+    return resultado
+
+
+def listar_cnaes_sem_regra(
+    limite: int = 50, ranqueio: list[str] | None = None,
+) -> list[dict]:
+    """Lista CNAEs SEM regra cadastrada.
+
+    Se `ranqueio` for fornecido (lista de CNAEs ordenada por
+    importância), os primeiros aparecem primeiro. Caso contrário,
+    ordena por código.
+    """
+    with get_conn() as conn:
+        # Cnaes em alguma base regulatória local mas SEM regra oficial
+        rows = conn.execute(
+            """
+            SELECT DISTINCT cnae FROM (
+              SELECT cnae FROM cnae_conselho
+              UNION SELECT cnae FROM cnae_anvisa
+              UNION SELECT cnae FROM cnae_ambiental
+              UNION SELECT cnae FROM cnae_outro_registro
+              UNION SELECT cnae FROM cnae_habilitacao_profissional
+            ) src
+            WHERE cnae NOT IN (SELECT cnae FROM cnae_regra_oficial)
+            """
+        ).fetchall()
+        candidatos = [dict(r)["cnae"] for r in rows]
+
+    if ranqueio:
+        # Coloca os ranqueados primeiro (na ordem), depois o resto
+        seti = set(candidatos)
+        ordenado = [c for c in ranqueio if c in seti]
+        resto = sorted([c for c in candidatos if c not in set(ranqueio)])
+        candidatos = ordenado + resto
+    else:
+        candidatos = sorted(candidatos)
+
+    return [{"cnae": c} for c in candidatos[:limite]]
+
+
 STATUS_VERIFICACAO_OK = "verificado"
 STATUS_VERIFICACAO_NA = "nao_se_aplica"
 STATUS_VERIFICACAO_PENDENTE = "pendente"
@@ -4335,6 +4631,43 @@ def analisar_empresa_completa(
             }
         else:
             item["verificacao"] = None
+
+        # 6b) Enriquece com REGRA OFICIAL determinística (se houver)
+        # Procura nas regras de CADA CNAE da empresa pra esse órgão,
+        # devolvendo a primeira que existir. Isso é o que dá CERTEZA
+        # ao sistema — quando há regra cadastrada, o usuário vê
+        # "OBRIGATÓRIO/DISPENSADO/CONDICIONAL" com base legal.
+        regras_aplicaveis = []
+        for a in todas_analises:
+            cnae_a = a.get("codigo") or ""
+            if not cnae_a:
+                continue
+            reg = buscar_regra_especifica(
+                cnae_a, item["sigla"],
+                orgao_uf=None,  # busca federal primeiro
+            )
+            if not reg:
+                # Tenta com UF (regras estaduais)
+                reg = buscar_regra_especifica(
+                    cnae_a, item["sigla"], orgao_uf=uf,
+                )
+            if reg:
+                regras_aplicaveis.append({
+                    "cnae": cnae_a,
+                    "obrigatoriedade": reg.get("obrigatoriedade"),
+                    "condicoes_obrigatorio": reg.get(
+                        "condicoes_obrigatorio"),
+                    "condicoes_dispensa": reg.get(
+                        "condicoes_dispensa"),
+                    "observacoes": reg.get("observacoes"),
+                    "base_legal": reg.get("base_legal"),
+                    "link_lei": reg.get("link_lei"),
+                    "data_revisao": (
+                        reg.get("data_revisao")
+                        or reg.get("data_cadastro")
+                    ),
+                })
+        item["regras_oficiais"] = regras_aplicaveis
 
     return {
         "empresa": dados,

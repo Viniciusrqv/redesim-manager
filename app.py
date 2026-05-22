@@ -5882,6 +5882,82 @@ def _render_relatorio_empresa(rel: dict):
                 f"{item['nome']}"
             )
 
+            # 🎯 REGRA OFICIAL determinística (se cadastrada)
+            regras_of = item.get("regras_oficiais") or []
+            if regras_of:
+                for r in regras_of:
+                    _badge_cor = {
+                        "sim": "#DC2626",
+                        "nao": "#047857",
+                        "condicional": "#D97706",
+                    }.get(r.get("obrigatoriedade"), "#1A2A4A")
+                    _badge_txt = {
+                        "sim": "🔴 OBRIGATÓRIO",
+                        "nao": "🟢 DISPENSADO",
+                        "condicional": "🟡 CONDICIONAL",
+                    }.get(r.get("obrigatoriedade"), "❓ INDEFINIDO")
+
+                    st.markdown(
+                        f"<div style='background:#FFFFFF; "
+                        f"border:1px solid {_badge_cor}; "
+                        f"border-left:4px solid {_badge_cor}; "
+                        f"border-radius:6px; padding:10px 12px; "
+                        f"margin:8px 0;'>"
+                        f"<div style='color:{_badge_cor}; "
+                        f"font-weight:700; font-size:13px;'>"
+                        f"{_badge_txt} · CNAE {r['cnae']}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if r.get("obrigatoriedade") == "condicional":
+                        if r.get("condicoes_obrigatorio"):
+                            st.markdown(
+                                f"**Obrigatório quando:** "
+                                f"{r['condicoes_obrigatorio']}"
+                            )
+                        if r.get("condicoes_dispensa"):
+                            st.markdown(
+                                f"**Dispensado quando:** "
+                                f"{r['condicoes_dispensa']}"
+                            )
+                    elif r.get("obrigatoriedade") == "sim":
+                        if r.get("condicoes_obrigatorio"):
+                            st.markdown(r["condicoes_obrigatorio"])
+                    elif r.get("obrigatoriedade") == "nao":
+                        if r.get("condicoes_dispensa"):
+                            st.markdown(r["condicoes_dispensa"])
+                    if r.get("observacoes"):
+                        st.caption(f"💡 {r['observacoes']}")
+                    if r.get("base_legal"):
+                        link_html = ""
+                        if r.get("link_lei"):
+                            link_html = (
+                                f" · <a href='{r['link_lei']}' "
+                                f"target='_blank'>📚 ver lei</a>"
+                            )
+                        st.markdown(
+                            f"<div style='font-size:11px; "
+                            f"color:#000000; margin-top:6px;'>"
+                            f"<b>Base legal:</b> {r['base_legal']}"
+                            f"{link_html}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                # Sem regra cadastrada — avisa
+                st.markdown(
+                    f"<div style='background:#FFFBEB; "
+                    f"border:1px dashed #D97706; "
+                    f"border-radius:6px; padding:8px 12px; "
+                    f"margin:6px 0; font-size:12px; color:#1A2A4A;'>"
+                    f"⚠️ <b>Sem regra cadastrada na base CSM</b> — "
+                    f"verifique no portal oficial e, depois de "
+                    f"confirmar, cadastre a regra em "
+                    f"<b>📚 Base de Regras</b> pra não precisar "
+                    f"pesquisar de novo."
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
             # Status atual em destaque (se houver)
             if verif:
                 quando = (verif.get("verificado_em") or "—")[:10]
@@ -7244,6 +7320,336 @@ def _pkg_existe(nome: str) -> bool:
 
 
 # ---------------------------------------------------------
+# PÁGINA — 📚 Base de Regras Oficiais por CNAE × Órgão
+# ---------------------------------------------------------
+def pagina_base_regras():
+    st.header("📚 Base de Regras Oficiais")
+    st.caption(
+        "Cada regra cadastrada aqui dá CERTEZA ao Consultor de CNAE — "
+        "em vez de 'provavelmente precisa de CRECI', o sistema responde "
+        "🔴 OBRIGATÓRIO / 🟢 DISPENSADO / 🟡 CONDICIONAL com base legal "
+        "citada e link pra lei. Não cadastre regra sem fonte oficial."
+    )
+
+    from database import (
+        upsert_regra_oficial, buscar_regras_cnae,
+        buscar_regra_especifica, remover_regra_oficial,
+        extrair_cnaes_da_carteira,
+        OBRIGATORIEDADE_SIM, OBRIGATORIEDADE_NAO,
+        OBRIGATORIEDADE_CONDICIONAL,
+    )
+    from auth import usuario_atual as _u_at
+
+    _u = _u_at() or {}
+    autor = _u.get("nome") or _u.get("email") or "—"
+
+    tab_cadastrar, tab_pendentes, tab_buscar = st.tabs([
+        "✍️ Cadastrar regra",
+        "📋 CNAEs da carteira sem regra",
+        "🔎 Buscar regras existentes",
+    ])
+
+    # ============ Tab 1: Cadastrar regra ============
+    with tab_cadastrar:
+        st.markdown(
+            "Preencha os campos abaixo **com base em lei/resolução "
+            "oficial**. Se você não consegue citar a base legal, "
+            "não cadastre — pesquise mais antes."
+        )
+
+        c1, c2, c3 = st.columns([2, 2, 1])
+        with c1:
+            cnae_in = st.text_input(
+                "CNAE *",
+                placeholder="6822-6/00",
+                key="reg_cnae",
+            ).strip()
+        with c2:
+            orgao_in = st.text_input(
+                "Sigla do órgão * (ex.: CRECI, CRC, ANVISA)",
+                key="reg_orgao",
+            ).strip().upper()
+        with c3:
+            uf_in = st.text_input(
+                "UF (se estadual)",
+                key="reg_uf", max_chars=2,
+                help="Deixe vazio se for regra federal.",
+            ).strip().upper()
+
+        st.markdown("### Resposta")
+        obg = st.radio(
+            "Esse CNAE exige cadastro/licença nesse órgão?",
+            options=[
+                ("sim", "🔴 SIM — sempre obrigatório"),
+                ("nao", "🟢 NÃO — dispensa cadastro"),
+                ("condicional",
+                 "🟡 CONDICIONAL — depende do que a empresa faz"),
+            ],
+            format_func=lambda x: x[1],
+            key="reg_obg",
+            horizontal=False,
+        )
+        obg_val = obg[0] if obg else "condicional"
+
+        cond_obg = ""
+        cond_disp = ""
+        if obg_val == OBRIGATORIEDADE_SIM:
+            cond_obg = st.text_area(
+                "Por que é sempre obrigatório? (explicação curta) *",
+                placeholder=(
+                    "Ex.: 'Corretagem é ato privativo do Corretor "
+                    "de Imóveis. PJ que exerce a atividade precisa de "
+                    "RT registrado no CRECI + registro PJ.'"
+                ),
+                key="reg_cond_obg",
+                height=80,
+            ).strip()
+        elif obg_val == OBRIGATORIEDADE_NAO:
+            cond_disp = st.text_area(
+                "Por que dispensa o cadastro? *",
+                placeholder=(
+                    "Ex.: 'Aluguel de imóvel próprio não configura "
+                    "intermediação — dispensa CRECI (Res. COFECI "
+                    "327/92 art. 3º).'"
+                ),
+                key="reg_cond_disp",
+                height=80,
+            ).strip()
+        else:
+            st.caption(
+                "Pra regra **condicional**, preencha PELO MENOS uma "
+                "das condições abaixo (idealmente as duas)."
+            )
+            cond_obg = st.text_area(
+                "Obrigatório QUANDO...",
+                placeholder=(
+                    "Ex.: 'A empresa INTERMEDIA negócios imobiliários "
+                    "(busca compradores/inquilinos, agencia venda).'"
+                ),
+                key="reg_cond_obg2",
+                height=80,
+            ).strip()
+            cond_disp = st.text_area(
+                "Dispensado QUANDO...",
+                placeholder=(
+                    "Ex.: 'A empresa apenas ADMINISTRA imóveis (cobra "
+                    "aluguel, paga IPTU, manutenção) sem intermediar "
+                    "novos contratos.'"
+                ),
+                key="reg_cond_disp2",
+                height=80,
+            ).strip()
+
+        observ = st.text_area(
+            "Observações práticas (dica/exemplo — opcional)",
+            placeholder=(
+                "Ex.: 'Na prática: se a empresa SÓ recebe procuração "
+                "pra administrar → dispensa. Se busca novos inquilinos "
+                "→ exige.'"
+            ),
+            key="reg_obs",
+            height=60,
+        ).strip()
+
+        cb1, cb2 = st.columns(2)
+        with cb1:
+            base_legal = st.text_input(
+                "Base legal * (lei + resolução)",
+                placeholder=(
+                    "Lei 6.530/78 art. 3º + Res. COFECI 327/92 art. 3º"
+                ),
+                key="reg_base_legal",
+            ).strip()
+        with cb2:
+            link_lei = st.text_input(
+                "Link pro PDF/texto da lei *",
+                placeholder=(
+                    "https://www.planalto.gov.br/ccivil_03/leis/l6530.htm"
+                ),
+                key="reg_link_lei",
+            ).strip()
+
+        if st.button(
+            "💾 Salvar regra",
+            type="primary",
+            use_container_width=True,
+            key="btn_salvar_regra",
+        ):
+            # Validações
+            erros = []
+            if not cnae_in:
+                erros.append("CNAE obrigatório.")
+            if not orgao_in:
+                erros.append("Sigla do órgão obrigatória.")
+            if not base_legal:
+                erros.append(
+                    "Base legal obrigatória — cite lei/resolução com "
+                    "número e artigo."
+                )
+            if not link_lei or not link_lei.startswith("http"):
+                erros.append(
+                    "Link pra lei obrigatório (URL começando com "
+                    "http/https)."
+                )
+            if obg_val == OBRIGATORIEDADE_SIM and not cond_obg:
+                erros.append("Explique por que é obrigatório.")
+            if obg_val == OBRIGATORIEDADE_NAO and not cond_disp:
+                erros.append("Explique por que dispensa.")
+            if obg_val == OBRIGATORIEDADE_CONDICIONAL and \
+                    not (cond_obg or cond_disp):
+                erros.append(
+                    "Regra condicional precisa de pelo menos uma "
+                    "das condições."
+                )
+
+            if erros:
+                for e in erros:
+                    st.error(e)
+            else:
+                try:
+                    upsert_regra_oficial(
+                        cnae_in, orgao_in, obg_val,
+                        orgao_uf=(uf_in or None),
+                        condicoes_obrigatorio=(cond_obg or None),
+                        condicoes_dispensa=(cond_disp or None),
+                        observacoes=(observ or None),
+                        base_legal=base_legal,
+                        link_lei=link_lei,
+                        autor=autor,
+                    )
+                    st.success(
+                        f"✅ Regra salva: CNAE {cnae_in} × "
+                        f"{orgao_in}{'/' + uf_in if uf_in else ''} "
+                        f"= {obg_val.upper()}"
+                    )
+                except Exception as exc:
+                    st.error(f"Erro: {exc}")
+
+    # ============ Tab 2: CNAEs sem regra ============
+    with tab_pendentes:
+        st.markdown(
+            "CNAEs que aparecem na **sua carteira** mas ainda não "
+            "têm regra cadastrada — ordenados por frequência. "
+            "Priorize os de cima."
+        )
+        try:
+            cnaes_carteira = extrair_cnaes_da_carteira()
+        except Exception as exc:
+            st.error(f"Erro ao escanear carteira: {exc}")
+            cnaes_carteira = []
+
+        if not cnaes_carteira:
+            st.info(
+                "Nenhum CNAE da carteira detectado ainda. Use o "
+                "Consultor de CNAE pra cadastrar empresas e os "
+                "CNAEs vão aparecer aqui."
+            )
+        else:
+            import pandas as pd
+            # Pra cada CNAE da carteira, conta quantas regras tem
+            linhas = []
+            for c in cnaes_carteira:
+                cn = c["cnae"]
+                regras = buscar_regras_cnae(cn)
+                linhas.append({
+                    "CNAE": cn,
+                    "Ocorrências na carteira": c["ocorrencias"],
+                    "Regras cadastradas": len(regras),
+                    "Órgãos cobertos": ", ".join(
+                        sorted({r["orgao_sigla"] for r in regras})
+                    ) or "—",
+                    "Status": (
+                        "✅ ok" if regras else "⚠️ FALTA cadastrar"
+                    ),
+                })
+            df = pd.DataFrame(linhas)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ============ Tab 3: Buscar regras ============
+    with tab_buscar:
+        cnae_busca = st.text_input(
+            "Digite o CNAE pra ver as regras já cadastradas",
+            placeholder="6822-6/00",
+            key="reg_busca_cnae",
+        ).strip()
+
+        if cnae_busca:
+            try:
+                regras = buscar_regras_cnae(cnae_busca)
+            except Exception as exc:
+                st.error(f"Erro: {exc}")
+                regras = []
+
+            if not regras:
+                st.warning(
+                    f"Nenhuma regra cadastrada pro CNAE {cnae_busca}. "
+                    f"Vá pra aba **✍️ Cadastrar regra** pra criar."
+                )
+            else:
+                for r in regras:
+                    cor = {
+                        "sim": "#DC2626",
+                        "nao": "#047857",
+                        "condicional": "#D97706",
+                    }.get(r["obrigatoriedade"], "#000000")
+                    label = {
+                        "sim": "🔴 OBRIGATÓRIO",
+                        "nao": "🟢 DISPENSADO",
+                        "condicional": "🟡 CONDICIONAL",
+                    }.get(r["obrigatoriedade"], "?")
+                    uf_s = f" / {r['orgao_uf']}" if r.get("orgao_uf") else ""
+
+                    with st.container(border=True):
+                        st.markdown(
+                            f"### {r['orgao_sigla']}{uf_s} "
+                            f"<span style='color:{cor};'>{label}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        if r.get("condicoes_obrigatorio"):
+                            st.markdown(
+                                f"**Obrigatório quando:** "
+                                f"{r['condicoes_obrigatorio']}"
+                            )
+                        if r.get("condicoes_dispensa"):
+                            st.markdown(
+                                f"**Dispensado quando:** "
+                                f"{r['condicoes_dispensa']}"
+                            )
+                        if r.get("observacoes"):
+                            st.caption(f"💡 {r['observacoes']}")
+                        if r.get("base_legal"):
+                            link_html = ""
+                            if r.get("link_lei"):
+                                link_html = (
+                                    f" · <a href='{r['link_lei']}' "
+                                    f"target='_blank'>📚 ver lei</a>"
+                                )
+                            st.markdown(
+                                f"**Base legal:** {r['base_legal']}"
+                                f"{link_html}",
+                                unsafe_allow_html=True,
+                            )
+                        st.caption(
+                            f"Cadastrado por {r.get('autor', '—')} · "
+                            f"última revisão: "
+                            f"{(r.get('data_revisao') or r.get('data_cadastro') or '—')[:16]}"
+                        )
+                        if st.button(
+                            "🗑️ Remover esta regra",
+                            key=f"rm_regra_{r['id']}",
+                        ):
+                            try:
+                                remover_regra_oficial(
+                                    r["cnae"], r["orgao_sigla"],
+                                    orgao_uf=r.get("orgao_uf"),
+                                )
+                                st.success("Removida.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Erro: {exc}")
+
+
+# ---------------------------------------------------------
 # ROTEAMENTO
 # ---------------------------------------------------------
 PAGINAS = {
@@ -7254,6 +7660,7 @@ PAGINAS = {
     "📋 Tarefas GESTTA": pagina_tarefas_gestta,
     "📌 Pendências Gerais": pagina_pendencias,
     "🔬 Consultor de CNAE": pagina_consulta_cnae,
+    "📚 Base de Regras": pagina_base_regras,
     "🏷️ Classificador CNAE": pagina_classificador,
     "📋 Matriz de Risco CNAE": pagina_matriz_risco,
     "🏥 Portaria CVS-SP (Vigilância)": pagina_vigilancia,
