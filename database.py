@@ -1093,13 +1093,30 @@ def criar_processo(empresa_id, protocolo, tipo, status="Em análise",
         return proc_id
 
 
-def atualizar_status(processo_id, novo_status, comentario=None, usuario="sistema"):
+def atualizar_status(processo_id, novo_status, comentario=None,
+                      usuario="sistema",
+                      *, fechar_protocolos_vinculados: bool = True):
+    """Atualiza status do processo antigo.
+
+    Se `fechar_protocolos_vinculados=True` (padrão) e o novo status é
+    terminal (Deferido/Indeferido/Arquivado), também fecha automaticamente
+    os protocolos REDESIM ativos da MESMA empresa — assim o Telegram
+    para de mandar 'ATRASO CRÍTICO' pra protocolo que o usuário já
+    considerou resolvido.
+
+    Mapeamento: Deferido → Aprovada/Concluída · Indeferido → Indeferida ·
+    Arquivado → Cancelada.
+
+    Retorna dict com {ok, protocolos_fechados: int}.
+    """
     with get_conn() as conn:
         atual = conn.execute(
-            "SELECT status FROM processos WHERE id = ?", (processo_id,)
+            "SELECT status, empresa_id FROM processos WHERE id = ?",
+            (processo_id,),
         ).fetchone()
         if not atual:
-            return False
+            return {"ok": False, "protocolos_fechados": 0}
+        emp_id = dict(atual)["empresa_id"]
         conn.execute(
             """UPDATE processos
                SET status = ?, ultima_movimentacao = date('now','localtime')
@@ -1109,9 +1126,54 @@ def atualizar_status(processo_id, novo_status, comentario=None, usuario="sistema
         conn.execute(
             """INSERT INTO movimentacoes (processo_id, de_status, para_status, usuario, comentario)
                VALUES (?,?,?,?,?)""",
-            (processo_id, atual["status"], novo_status, usuario, comentario),
+            (processo_id, dict(atual)["status"], novo_status, usuario,
+             comentario),
         )
-        return True
+
+        # Cascata pros protocolos REDESIM da mesma empresa (se for status
+        # terminal e o usuário pediu)
+        fechados = 0
+        if fechar_protocolos_vinculados and novo_status in (
+                "Deferido", "Indeferido", "Arquivado"):
+            mapa = {
+                "Deferido": "Concluída",
+                "Indeferido": "Indeferida",
+                "Arquivado": "Cancelada",
+            }
+            novo_status_protocolo = mapa[novo_status]
+
+            ativos = conn.execute(
+                """SELECT id, tipo FROM protocolos_redesim
+                   WHERE empresa_id = ?
+                     AND status NOT IN
+                       ('Aprovada','Concluída','Indeferida',
+                        'Cancelada','Inativa')
+                     AND substituido_por_id IS NULL""",
+                (emp_id,),
+            ).fetchall()
+
+            for p in ativos:
+                pid = dict(p)["id"]
+                ptipo = dict(p)["tipo"]
+                # Viabilidade não tem "Concluída", só "Aprovada"
+                status_final = (
+                    "Aprovada"
+                    if (ptipo == "Viabilidade"
+                        and novo_status == "Deferido")
+                    else novo_status_protocolo
+                )
+                # Usa atualizar_status_protocolo se existir, senão
+                # update direto pra não recursar
+                conn.execute(
+                    """UPDATE protocolos_redesim
+                       SET status = ?,
+                           atualizado_em = datetime('now','localtime')
+                       WHERE id = ?""",
+                    (status_final, pid),
+                )
+                fechados += 1
+
+        return {"ok": True, "protocolos_fechados": fechados}
 
 
 def cnaes_do_processo(processo_id):

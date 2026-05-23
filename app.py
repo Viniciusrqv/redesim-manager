@@ -1641,10 +1641,25 @@ def pagina_dashboard():
                     )
                     if novo != row["status"] and st.button(
                             "Atualizar", key=f"btn_{row['id']}"):
-                        atualizar_status(row["id"], novo,
-                                         comentario="Alterado pelo painel",
-                                         usuario="app")
-                        st.success("Status atualizado!")
+                        res = atualizar_status(
+                            row["id"], novo,
+                            comentario="Alterado pelo painel",
+                            usuario="app",
+                        )
+                        if isinstance(res, dict):
+                            fech = res.get("protocolos_fechados", 0)
+                            if fech > 0:
+                                st.success(
+                                    f"Status atualizado! E **{fech} "
+                                    f"protocolo(s) REDESIM** da mesma "
+                                    f"empresa foi(ram) fechado(s) "
+                                    f"automaticamente — assim o "
+                                    f"Telegram para de mandar alerta."
+                                )
+                            else:
+                                st.success("Status atualizado!")
+                        else:
+                            st.success("Status atualizado!")
                         st.rerun()
 
 

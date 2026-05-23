@@ -161,6 +161,10 @@ def checar_protocolos_redesim():
     Considera apenas protocolos cujo status NÃO está em
     STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA e que NÃO foram
     substituídos (substituido_por_id IS NULL).
+
+    SILENCIA alerta se a empresa teve um PROCESSO ANTIGO finalizado
+    nos últimos 14 dias — provavelmente o usuário finalizou no
+    Dashboard/Kanban e esqueceu de fechar o protocolo REDESIM.
     """
     log.info("Verificando protocolos REDESIM em andamento...")
     todos = listar_todos_protocolos()
@@ -171,6 +175,41 @@ def checar_protocolos_redesim():
     ]
     if not em_andamento:
         log.info("Nenhum protocolo REDESIM em andamento. ✅")
+        return
+
+    # Filtro de "empresas com processo recente finalizado": evita
+    # alertar de protocolo REDESIM cuja empresa o usuário já marcou
+    # como Deferido/Indeferido/Arquivado no sistema antigo (Dashboard).
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT empresa_id FROM processos
+               WHERE status IN ('Deferido','Indeferido','Arquivado')
+                 AND julianday('now') -
+                     julianday(ultima_movimentacao) <= 14"""
+        ).fetchall()
+        empresas_recem_fechadas = {
+            dict(r)["empresa_id"] for r in rows
+        }
+
+    if empresas_recem_fechadas:
+        antes = len(em_andamento)
+        em_andamento = [
+            p for p in em_andamento
+            if p.get("empresa_id") not in empresas_recem_fechadas
+        ]
+        silenciados = antes - len(em_andamento)
+        if silenciados:
+            log.info(
+                "Silenciados %d protocolo(s) de empresas com processo "
+                "antigo finalizado nos ultimos 14 dias.",
+                silenciados,
+            )
+
+    if not em_andamento:
+        log.info(
+            "Nenhum protocolo REDESIM em andamento "
+            "(apos filtro de processos recem fechados). ✅"
+        )
         return
 
     hoje = datetime.now()
