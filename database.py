@@ -297,6 +297,7 @@ DDL = [
         done_fine           INTEGER,
         risco               TEXT,
         motivo_risco        TEXT,
+        tipo                TEXT,                    -- categoria pra filtros: LICENCA_FUNCIONAMENTO / ALVARA_SANITARIO / BOMBEIROS / DEVOLUCAO / ABERTURA / ALTERACAO / BAIXA / CONSELHO / OUTROS
         empresa_id          INTEGER,
         protocolo_id        INTEGER,
         resolvida           INTEGER DEFAULT 0,
@@ -315,6 +316,13 @@ DDL = [
     """
     CREATE INDEX IF NOT EXISTS idx_gestta_resolvida
     ON tarefas_gestta(resolvida);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_gestta_tipo
+    ON tarefas_gestta(tipo);
+    """,
+    """
+    ALTER TABLE tarefas_gestta ADD COLUMN tipo TEXT;
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_gestta_risco
@@ -2233,6 +2241,138 @@ import unicodedata as _ud
 
 RISCOS_GESTTA = ["ALTO", "MÉDIO", "BAIXO"]
 
+# Tipos de tarefa pra agrupamento e filtros rápidos. Identificados
+# por palavras-chave no nome da tarefa GESTTA. Quando uma tarefa não
+# se encaixa, vira "OUTROS" e pode ser reclassificada manualmente.
+TIPO_TAREFA_LICENCA_FUNC    = "LICENCA_FUNCIONAMENTO"
+TIPO_TAREFA_ALVARA_SANIT    = "ALVARA_SANITARIO"
+TIPO_TAREFA_BOMBEIROS       = "BOMBEIROS"
+TIPO_TAREFA_DEVOLUCAO       = "DEVOLUCAO"
+TIPO_TAREFA_ABERTURA        = "ABERTURA"
+TIPO_TAREFA_ALTERACAO       = "ALTERACAO"
+TIPO_TAREFA_BAIXA           = "BAIXA"
+TIPO_TAREFA_CONSELHO        = "CONSELHO"
+TIPO_TAREFA_AMBIENTAL       = "AMBIENTAL"
+TIPO_TAREFA_OUTROS          = "OUTROS"
+
+TIPOS_TAREFA_GESTTA = [
+    TIPO_TAREFA_LICENCA_FUNC,
+    TIPO_TAREFA_ALVARA_SANIT,
+    TIPO_TAREFA_BOMBEIROS,
+    TIPO_TAREFA_DEVOLUCAO,
+    TIPO_TAREFA_ABERTURA,
+    TIPO_TAREFA_ALTERACAO,
+    TIPO_TAREFA_BAIXA,
+    TIPO_TAREFA_CONSELHO,
+    TIPO_TAREFA_AMBIENTAL,
+    TIPO_TAREFA_OUTROS,
+]
+
+TIPO_TAREFA_LABELS = {
+    TIPO_TAREFA_LICENCA_FUNC:  "🏢 Licença de Funcionamento",
+    TIPO_TAREFA_ALVARA_SANIT:  "🏥 Alvará Sanitário",
+    TIPO_TAREFA_BOMBEIROS:     "🚒 Bombeiros (AVCB/CLCB)",
+    TIPO_TAREFA_DEVOLUCAO:     "👋 Devolução / Distrato",
+    TIPO_TAREFA_ABERTURA:      "➕ Abertura de empresa",
+    TIPO_TAREFA_ALTERACAO:     "✏️ Alteração contratual",
+    TIPO_TAREFA_BAIXA:         "🗑️ Baixa de empresa",
+    TIPO_TAREFA_CONSELHO:      "👨‍⚕️ Conselho profissional",
+    TIPO_TAREFA_AMBIENTAL:     "🌱 Licença Ambiental",
+    TIPO_TAREFA_OUTROS:        "📌 Outros",
+}
+
+
+def classificar_tipo_tarefa_gestta(tarefa_nome: str,
+                                    departamento: str | None = None) -> str:
+    """Classifica a tarefa GESTTA em uma das categorias práticas
+    pra que a equipe possa filtrar e atacar por bloco.
+
+    A regra é ESTRUTURADA por palavra-chave no nome, com prioridade
+    pros tipos mais específicos primeiro (bombeiros antes de licença
+    genérica, alvará antes de licença, etc.).
+
+    Retorna sempre uma string em TIPOS_TAREFA_GESTTA — nunca None.
+    """
+    t = (tarefa_nome or "").upper()
+    d = (departamento or "").upper()
+
+    # Descarta acentos pra ficar tolerante
+    import unicodedata as _ud2
+    t = _ud2.normalize("NFKD", t).encode("ASCII", "ignore").decode("ASCII")
+    d = _ud2.normalize("NFKD", d).encode("ASCII", "ignore").decode("ASCII")
+
+    # DEVOLUCAO / DISTRATO — palavra forte, identifica primeiro
+    if any(k in t for k in [
+        "DEVOLUCAO", "DEVOLUCÃO", "DEVOLVER",
+        "DISTRATO", "ENCERR", "DESLIGAMENTO",
+        "RESCIS", "DESVINCUL", "CANCELAMENTO DO CONTRATO",
+        "CANCELAMENTO DE CONTRATO", "ENTREGA DE DOCUM",
+        "TRANSFERENCIA PARA OUTR",
+    ]):
+        return TIPO_TAREFA_DEVOLUCAO
+
+    # BOMBEIROS — AVCB, CLCB, Corpo de Bombeiros
+    if any(k in t for k in [
+        "AVCB", "CLCB", "BOMBEIRO", "BOMBEIROS",
+        "VIA FACIL BOMBEIRO", "CB-PMESP", "CB PMESP",
+    ]):
+        return TIPO_TAREFA_BOMBEIROS
+
+    # ALVARA SANITARIO / VIGILANCIA
+    if ("ALVARA" in t and "SANIT" in t) or \
+       "VIGILANCIA SANIT" in t or \
+       "LICENCA SANIT" in t or \
+       "CEVS" in t or \
+       "VISA" in t.split() or \
+       "COVISA" in t or \
+       ("ANVISA" in t and "AFE" in t):
+        return TIPO_TAREFA_ALVARA_SANIT
+
+    # CONSELHO PROFISSIONAL
+    siglas_conselho = (
+        "CRM", "CRO", "CREA", "CRP", "CRC", "CRF", "CRN", "CRQ",
+        "COREN", "CREFITO", "CREFSP", "CREF", "CRBM", "CRBIO",
+        "CAU", "CORECON", "OAB", "ART", "RRT", "CRMV", "CFMV",
+        "COFFITO", "CONFEF", "CFC", "CFM",
+    )
+    palavras = set(t.split())
+    if (palavras & set(siglas_conselho)) or "CONSELHO" in t and "REGION" in t:
+        return TIPO_TAREFA_CONSELHO
+
+    # LICENCA AMBIENTAL
+    if any(k in t for k in [
+        "AMBIENT", "CETESB", "IBAMA", "CTF",
+        "LICENCA AMBIENT", "OUTORGA",
+    ]):
+        return TIPO_TAREFA_AMBIENTAL
+
+    # ABERTURA
+    if "ABERTURA" in t or "CONSTITUI" in t:
+        return TIPO_TAREFA_ABERTURA
+
+    # ALTERACAO
+    if "ALTERA" in t or "CONTRATO SOCIAL" in t:
+        return TIPO_TAREFA_ALTERACAO
+
+    # BAIXA fiscal
+    if "BAIXA" in t and ("EMPRESA" in t or "JUNTA" in t or "RFB" in t
+                          or "RECEITA" in t or "CNPJ" in t):
+        return TIPO_TAREFA_BAIXA
+
+    # LICENCA DE FUNCIONAMENTO (genérica) — vem POR ULTIMO porque é
+    # a categoria mais ampla. Pega "renovação de licença", "funcionamento",
+    # "alvará de funcionamento" (≠ sanitário).
+    if "RENOVA" in t and "LICENC" in t:
+        return TIPO_TAREFA_LICENCA_FUNC
+    if "FUNCIONAMENTO" in t:
+        return TIPO_TAREFA_LICENCA_FUNC
+    if "ALVARA" in t:  # alvará genérico (não sanitário)
+        return TIPO_TAREFA_LICENCA_FUNC
+    if "LICEN" in t:
+        return TIPO_TAREFA_LICENCA_FUNC
+
+    return TIPO_TAREFA_OUTROS
+
 _SUFIXOS_EMPRESARIAIS = (
     "LTDA", "LTDA.", "ME", "M.E.", "EPP", "E.P.P.",
     "EIRELI", "S.A.", "SA", "S/A", "CIA", "LIMITADA",
@@ -2349,6 +2489,7 @@ def importar_tarefas_gestta(
             status_gestta = (reg.get("status_gestta") or "").strip() or None
             departamento = (reg.get("departamento") or "").strip() or None
             risco, motivo = classificar_risco_tarefa_gestta(tarefa_nome)
+            tipo = classificar_tipo_tarefa_gestta(tarefa_nome, departamento)
             # tentar matching automático
             emp = match_empresa_por_nome(cliente_nome)
             empresa_id = emp["id"] if emp else None
@@ -2370,13 +2511,14 @@ def importar_tarefas_gestta(
                 conn.execute(
                     """UPDATE tarefas_gestta SET
                          cliente_nome=?, atrasada=?, status_gestta=?,
-                         departamento=?, risco=?, motivo_risco=?,
+                         departamento=?, risco=?, motivo_risco=?, tipo=?,
                          empresa_id = COALESCE(empresa_id, ?),
                          origem_arquivo = COALESCE(?, origem_arquivo),
                          atualizado_em = datetime('now', 'localtime')
                        WHERE id = ?""",
                     (cliente_nome, atrasada, status_gestta, departamento,
-                     risco, motivo, empresa_id, origem_arquivo, existente["id"]),
+                     risco, motivo, tipo,
+                     empresa_id, origem_arquivo, existente["id"]),
                 )
                 atualizados += 1
             else:
@@ -2384,11 +2526,13 @@ def importar_tarefas_gestta(
                     """INSERT INTO tarefas_gestta (
                          tarefa_nome, cliente_nome, cliente_norm, responsavel,
                          atrasada, status_gestta, departamento,
-                         risco, motivo_risco, empresa_id, origem_arquivo
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         risco, motivo_risco, tipo,
+                         empresa_id, origem_arquivo
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (tarefa_nome, cliente_nome, cliente_norm, responsavel,
                      atrasada, status_gestta, departamento,
-                     risco, motivo, empresa_id, origem_arquivo),
+                     risco, motivo, tipo,
+                     empresa_id, origem_arquivo),
                 )
                 inseridos += 1
         conn.commit()
@@ -2421,6 +2565,7 @@ def upsert_tarefas_gestta_api(tarefas_api: list[dict]) -> dict:
             risco, motivo = classificar_risco_tarefa_gestta(
                 tarefa_nome, overdue=is_overdue,
             )
+            tipo_tarefa = classificar_tipo_tarefa_gestta(tarefa_nome)
             emp = match_empresa_por_nome(cliente_nome) if cliente_nome else None
             empresa_id = emp["id"] if emp else None
             if empresa_id:
@@ -2455,6 +2600,7 @@ def upsert_tarefas_gestta_api(tarefas_api: list[dict]) -> dict:
                 "done_fine": 1 if t.get("done_fine") else 0,
                 "risco": risco,
                 "motivo_risco": motivo,
+                "tipo": tipo_tarefa,
                 "origem_arquivo": "API GESTTA",
             }
 
@@ -2498,8 +2644,16 @@ def listar_tarefas_gestta(
     responsavel: str | None = None,
     somente_sem_empresa: bool = False,
     somente_sem_protocolo: bool = False,
+    tipo: str | list[str] | None = None,
+    apenas_atrasadas: bool = False,
 ) -> list[dict]:
-    """Lista tarefas GESTTA com filtros opcionais."""
+    """Lista tarefas GESTTA com filtros opcionais.
+
+    Novos filtros:
+      - `tipo`: string ou lista de tipos (LICENCA_FUNCIONAMENTO,
+        ALVARA_SANITARIO, BOMBEIROS, DEVOLUCAO, etc.)
+      - `apenas_atrasadas`: True só traz overdue=1 OU atrasada='Sim'.
+    """
     sql = """
         SELECT t.*,
                e.razao_social AS empresa_razao_social,
@@ -2524,18 +2678,94 @@ def listar_tarefas_gestta(
         sql += " AND t.empresa_id IS NULL"
     if somente_sem_protocolo:
         sql += " AND t.protocolo_id IS NULL"
+    if tipo:
+        if isinstance(tipo, str):
+            tipo = [tipo]
+        placeholders = ",".join("?" * len(tipo))
+        sql += f" AND COALESCE(t.tipo, '') IN ({placeholders})"
+        params.extend(tipo)
+    if apenas_atrasadas:
+        # overdue=1 OU campo atrasada com texto positivo
+        sql += (" AND (t.overdue = 1 OR "
+                "UPPER(COALESCE(t.atrasada, '')) IN "
+                "('SIM','YES','TRUE','1'))")
     sql += """
-        ORDER BY CASE t.risco
+        ORDER BY CASE WHEN t.overdue = 1 THEN 0 ELSE 1 END,
+                 CASE t.risco
                    WHEN 'ALTO' THEN 0
                    WHEN 'MÉDIO' THEN 1
                    WHEN 'BAIXO' THEN 2
                    ELSE 3
                  END,
+                 COALESCE(t.due_date, '9999-12-31'),
                  t.responsavel,
                  t.cliente_nome
     """
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def contar_tarefas_por_tipo(
+    *, apenas_pendentes: bool = True,
+) -> dict:
+    """Retorna contagem de tarefas por tipo + sub-contagem de atrasadas.
+
+    Output:
+      {
+        "LICENCA_FUNCIONAMENTO": {"total": 12, "atrasadas": 5},
+        "ALVARA_SANITARIO": {"total": 8, "atrasadas": 3},
+        ...
+        "_SEM_TIPO": {"total": 0, "atrasadas": 0}  # ainda não classificadas
+      }
+    """
+    sql = """
+        SELECT COALESCE(tipo, '_SEM_TIPO') AS tipo,
+               COUNT(*) AS total,
+               SUM(CASE WHEN overdue = 1 OR
+                            UPPER(COALESCE(atrasada,'')) IN
+                              ('SIM','YES','TRUE','1') THEN 1 ELSE 0 END)
+                 AS atrasadas
+          FROM tarefas_gestta
+    """
+    if apenas_pendentes:
+        sql += " WHERE resolvida = 0 "
+    sql += " GROUP BY COALESCE(tipo, '_SEM_TIPO')"
+    with get_conn() as conn:
+        rows = conn.execute(sql).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        out[d["tipo"]] = {
+            "total": int(d.get("total") or 0),
+            "atrasadas": int(d.get("atrasadas") or 0),
+        }
+    return out
+
+
+def reclassificar_tipos_tarefas(forcar: bool = False) -> int:
+    """Aplica classificar_tipo_tarefa_gestta em todas as tarefas que
+    ainda não têm `tipo` setado (ou todas, se forcar=True).
+
+    Retorna o número de tarefas reclassificadas.
+    """
+    with get_conn() as conn:
+        sql_sel = "SELECT id, tarefa_nome, departamento FROM tarefas_gestta"
+        if not forcar:
+            sql_sel += " WHERE tipo IS NULL OR tipo = ''"
+        rows = conn.execute(sql_sel).fetchall()
+        n = 0
+        for r in rows:
+            d = dict(r)
+            tipo = classificar_tipo_tarefa_gestta(
+                d.get("tarefa_nome", ""),
+                d.get("departamento", ""),
+            )
+            conn.execute(
+                "UPDATE tarefas_gestta SET tipo = ? WHERE id = ?",
+                (tipo, d["id"]),
+            )
+            n += 1
+        return n
 
 
 def atualizar_tarefa_gestta(tarefa_id: int, **campos) -> bool:

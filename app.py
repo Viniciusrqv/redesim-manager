@@ -54,6 +54,12 @@ from database import (init_db, listar_empresas, criar_empresa,
                       protocolos_problematicos_ativos, substituir_protocolos,
                       # GESTTA
                       RISCOS_GESTTA, classificar_risco_tarefa_gestta,
+                      TIPOS_TAREFA_GESTTA, TIPO_TAREFA_LABELS,
+                      TIPO_TAREFA_LICENCA_FUNC, TIPO_TAREFA_ALVARA_SANIT,
+                      TIPO_TAREFA_BOMBEIROS, TIPO_TAREFA_DEVOLUCAO,
+                      classificar_tipo_tarefa_gestta,
+                      contar_tarefas_por_tipo,
+                      reclassificar_tipos_tarefas,
                       normalizar_nome_cliente, match_empresa_por_nome,
                       importar_tarefas_gestta, listar_tarefas_gestta,
                       atualizar_tarefa_gestta, marcar_tarefa_resolvida,
@@ -4774,6 +4780,311 @@ def _salvar_anotacao_e_replicar(
         )
 
 
+# =====================================================================
+# Tarefas GESTTA — abas dedicadas (Regularização + Devolução)
+# =====================================================================
+def _aba_regularizacao():
+    """Visão focada em Licença de Funcionamento + Alvará Sanitário +
+    Bombeiros. Mostra atrasadas no topo, agrupadas por tipo.
+    """
+    st.markdown(
+        "**Tarefas de regularização** (Licença de Funcionamento, Alvará "
+        "Sanitário, Bombeiros) — independente do responsável. "
+        "Atrasadas aparecem primeiro pra você atacar."
+    )
+
+    # Reclassifica tarefas antigas sem `tipo` (uma vez por carregamento)
+    if not st.session_state.get("_tipos_reclassificados"):
+        try:
+            n = reclassificar_tipos_tarefas()
+            st.session_state["_tipos_reclassificados"] = True
+            if n:
+                st.caption(
+                    f"🔄 {n} tarefa(s) reclassificada(s) automaticamente "
+                    f"pelo tipo."
+                )
+        except Exception:
+            pass
+
+    # Contadores por tipo
+    try:
+        contagem = contar_tarefas_por_tipo()
+    except Exception as exc:
+        st.error(f"Erro ao contar tarefas: {exc}")
+        return
+
+    TIPOS_FOCO = [
+        TIPO_TAREFA_LICENCA_FUNC,
+        TIPO_TAREFA_ALVARA_SANIT,
+        TIPO_TAREFA_BOMBEIROS,
+    ]
+
+    # Cards-resumo
+    cols = st.columns(3)
+    for i, tipo_id in enumerate(TIPOS_FOCO):
+        info = contagem.get(tipo_id, {"total": 0, "atrasadas": 0})
+        label = TIPO_TAREFA_LABELS.get(tipo_id, tipo_id)
+        cor_borda = (
+            "#DC2626" if info["atrasadas"] > 0 else "#1F4FD3"
+        )
+        with cols[i]:
+            st.markdown(
+                f"<div style='background:#FFFFFF; border:1px solid #E5E9F2; "
+                f"border-top:4px solid {cor_borda}; border-radius:8px; "
+                f"padding:14px 16px; min-height:110px;'>"
+                f"<div style='font-size:11px; font-weight:700; "
+                f"text-transform:uppercase; letter-spacing:.5px; "
+                f"color:#000000;'>{label}</div>"
+                f"<div style='font-size:30px; font-weight:700; "
+                f"color:#1A2A4A; margin:6px 0 4px;'>{info['total']}</div>"
+                f"<div style='font-size:12px; color:#DC2626; "
+                f"font-weight:600;'>"
+                f"{'🔴 ' + str(info['atrasadas']) + ' atrasada(s)' if info['atrasadas'] else '🟢 nenhuma atrasada'}"
+                f"</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+    # ===== Filtros =====
+    fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
+    with fcol1:
+        responsaveis_disponiveis = ["Todos"] + (
+            listar_responsaveis_gestta() or []
+        )
+        resp_sel = st.selectbox(
+            "Responsável",
+            responsaveis_disponiveis,
+            index=0,
+            key="reg_resp_filter",
+        )
+    with fcol2:
+        modo = st.radio(
+            "Mostrar",
+            ["Atrasadas primeiro (tudo)", "Só atrasadas",
+             "Só no prazo"],
+            horizontal=True,
+            key="reg_modo_filter",
+        )
+    with fcol3:
+        st.markdown("<div style='height:28px'></div>",
+                    unsafe_allow_html=True)
+        if st.button("🔄 Recarregar", key="btn_reload_reg",
+                      use_container_width=True):
+            try:
+                n = reclassificar_tipos_tarefas(forcar=True)
+                st.success(f"Reclassificadas {n} tarefas.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    # ===== Lista filtrada =====
+    apenas_atrasadas = (modo == "Só atrasadas")
+    so_no_prazo = (modo == "Só no prazo")
+
+    tarefas = listar_tarefas_gestta(
+        apenas_pendentes=True,
+        tipo=TIPOS_FOCO,
+        responsavel=(resp_sel if resp_sel != "Todos" else None),
+        apenas_atrasadas=apenas_atrasadas,
+    )
+    if so_no_prazo:
+        tarefas = [
+            t for t in tarefas
+            if not (t.get("overdue") == 1 or
+                    (t.get("atrasada") or "").upper()
+                    in ("SIM", "YES", "TRUE", "1"))
+        ]
+
+    if not tarefas:
+        st.info(
+            "🎉 Nenhuma tarefa de regularização encontrada com esses "
+            "filtros. Tudo limpo!"
+        )
+        return
+
+    st.caption(f"**{len(tarefas)} tarefa(s)** com os filtros atuais.")
+
+    # Agrupa por tipo pra ficar visualmente organizado
+    por_tipo: dict[str, list] = {}
+    for t in tarefas:
+        por_tipo.setdefault(
+            t.get("tipo") or "OUTROS", []
+        ).append(t)
+
+    for tipo_id in TIPOS_FOCO:
+        lista_t = por_tipo.get(tipo_id, [])
+        if not lista_t:
+            continue
+        n_atr = sum(
+            1 for t in lista_t
+            if t.get("overdue") == 1 or
+            (t.get("atrasada") or "").upper() in ("SIM", "YES", "TRUE", "1")
+        )
+        label = TIPO_TAREFA_LABELS.get(tipo_id, tipo_id)
+        st.markdown(
+            f"### {label} · {len(lista_t)} tarefa(s)"
+            + (f" · 🔴 {n_atr} atrasada(s)" if n_atr else "")
+        )
+        for t in lista_t:
+            _render_card_tarefa_compacta(t)
+
+
+def _aba_devolucoes():
+    """Visão dedicada a devoluções/distratos — pra encerrar relação
+    com clientes que estão saindo do escritório."""
+    st.markdown(
+        "**Tarefas de devolução / distrato** — clientes saindo do "
+        "escritório. Use o botão **📝 Gerar contrato de distrato** "
+        "em cada tarefa pra montar a documentação pronta."
+    )
+
+    try:
+        contagem = contar_tarefas_por_tipo()
+    except Exception as exc:
+        st.error(f"Erro: {exc}")
+        return
+
+    info = contagem.get(TIPO_TAREFA_DEVOLUCAO, {"total": 0, "atrasadas": 0})
+    cor = "#DC2626" if info["atrasadas"] > 0 else "#1F4FD3"
+
+    st.markdown(
+        f"<div style='background:#FFFFFF; border:1px solid #E5E9F2; "
+        f"border-top:4px solid {cor}; border-radius:8px; "
+        f"padding:14px 16px; max-width:300px;'>"
+        f"<div style='font-size:11px; font-weight:700; "
+        f"text-transform:uppercase; color:#000000;'>👋 Devoluções</div>"
+        f"<div style='font-size:30px; font-weight:700; "
+        f"color:#1A2A4A; margin:6px 0;'>{info['total']}</div>"
+        f"<div style='font-size:12px; color:#DC2626; font-weight:600;'>"
+        f"{'🔴 ' + str(info['atrasadas']) + ' atrasada(s)' if info['atrasadas'] else '🟢 nenhuma atrasada'}"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+    fcol1, fcol2 = st.columns([2, 1])
+    with fcol1:
+        resp = ["Todos"] + (listar_responsaveis_gestta() or [])
+        resp_sel = st.selectbox(
+            "Responsável", resp, index=0, key="devol_resp_filter",
+        )
+    with fcol2:
+        st.markdown("<div style='height:28px'></div>",
+                    unsafe_allow_html=True)
+        so_atr = st.checkbox(
+            "Só atrasadas", key="devol_so_atr",
+        )
+
+    tarefas = listar_tarefas_gestta(
+        apenas_pendentes=True,
+        tipo=TIPO_TAREFA_DEVOLUCAO,
+        responsavel=(resp_sel if resp_sel != "Todos" else None),
+        apenas_atrasadas=so_atr,
+    )
+
+    if not tarefas:
+        st.info(
+            "Nenhuma tarefa de devolução pendente. Quando aparecer "
+            "uma tarefa com termos como 'distrato', 'devolução', "
+            "'encerramento', 'rescisão' no nome (no GESTTA), ela vem "
+            "automaticamente pra esta aba."
+        )
+        return
+
+    st.caption(f"**{len(tarefas)} tarefa(s) de devolução pendentes.**")
+    for t in tarefas:
+        _render_card_tarefa_compacta(t, mostrar_distrato=True)
+
+
+def _render_card_tarefa_compacta(t: dict, mostrar_distrato: bool = False):
+    """Card compacto pra listagem de tarefas por tipo. Mais enxuto
+    que o expander gigante da aba de tarefas pendentes."""
+    atrasada = (t.get("overdue") == 1 or
+                (t.get("atrasada") or "").upper()
+                in ("SIM", "YES", "TRUE", "1"))
+    cor_borda = "#DC2626" if atrasada else "#E5E9F2"
+    badge_atraso = "🔴 ATRASADA" if atrasada else "🟢 No prazo"
+    cor_badge = "#DC2626" if atrasada else "#047857"
+    due = t.get("due_date") or "—"
+    if due and len(due) >= 10:
+        due_fmt = f"{due[8:10]}/{due[5:7]}/{due[:4]}"
+    else:
+        due_fmt = "—"
+
+    emp_label = (
+        t.get("empresa_razao_social")
+        if t.get("empresa_id") else "⚠️ sem empresa vinculada"
+    )
+
+    with st.container(border=False):
+        st.markdown(
+            f"<div style='background:#FFFFFF; border:1px solid #E5E9F2; "
+            f"border-left:4px solid {cor_borda}; border-radius:6px; "
+            f"padding:10px 14px; margin:8px 0;'>"
+            f"<div style='display:flex; justify-content:space-between; "
+            f"align-items:center;'>"
+            f"<div style='font-weight:600; font-size:14px; "
+            f"color:#1A2A4A;'>{t['tarefa_nome']}</div>"
+            f"<div style='font-size:11px; color:{cor_badge}; "
+            f"font-weight:700;'>{badge_atraso}</div>"
+            f"</div>"
+            f"<div style='font-size:13px; color:#000000; "
+            f"margin-top:4px;'>"
+            f"🏢 {t['cliente_nome']} · "
+            f"👤 {t.get('responsavel') or '—'} · "
+            f"📅 vence {due_fmt}"
+            f"</div>"
+            f"<div style='font-size:11px; color:#000000; "
+            f"margin-top:2px;'>{emp_label}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        acol1, acol2, acol3 = st.columns([1, 1, 1])
+        with acol1:
+            if st.button(
+                "✅ Resolver",
+                key=f"compact_resol_{t['id']}",
+                use_container_width=True,
+                help="Marca a tarefa como resolvida no app (não toca no GESTTA).",
+            ):
+                try:
+                    marcar_tarefa_resolvida(t["id"])
+                    st.toast("✅ Tarefa resolvida.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+        with acol2:
+            if st.button(
+                "👁️ Detalhes",
+                key=f"compact_det_{t['id']}",
+                use_container_width=True,
+            ):
+                st.session_state["focus_tarefa_id"] = t["id"]
+                st.info(
+                    "Use a aba **📋 Tarefas pendentes (todas)** acima "
+                    "pra ver o painel completo desta tarefa."
+                )
+        with acol3:
+            if mostrar_distrato:
+                if st.button(
+                    "📝 Gerar distrato",
+                    key=f"compact_distr_{t['id']}",
+                    use_container_width=True,
+                    type="primary",
+                    help="Gera um Word com o contrato de distrato pré-preenchido.",
+                ):
+                    st.session_state["distrato_tarefa_id"] = t["id"]
+                    st.info(
+                        "⚠️ Gerador de distrato disponível em breve "
+                        "(próximo deploy). Por enquanto, anote o ID "
+                        f"da tarefa: **{t['id']}**."
+                    )
+
+
 def pagina_tarefas_gestta():
     st.header("📋 Tarefas GESTTA")
     st.caption(
@@ -4809,9 +5120,25 @@ def pagina_tarefas_gestta():
             "use o botão **Re-tentar match** abaixo."
         )
 
-    tab_upload, tab_lista, tab_stats = st.tabs([
-        "📥 Importar XLSX", "📋 Tarefas pendentes", "📊 Estatísticas",
+    tab_regular, tab_devol, tab_upload, tab_lista, tab_stats = st.tabs([
+        "🎯 Regularização (Licença + Alvará + Bombeiros)",
+        "👋 Devoluções / Distratos",
+        "📥 Importar XLSX",
+        "📋 Tarefas pendentes (todas)",
+        "📊 Estatísticas",
     ])
+
+    # =====================================================
+    # Aba: Regularização (foco em Licença + Alvará + Bombeiros)
+    # =====================================================
+    with tab_regular:
+        _aba_regularizacao()
+
+    # =====================================================
+    # Aba: Devoluções
+    # =====================================================
+    with tab_devol:
+        _aba_devolucoes()
 
     # -------- Aba: Importar ----------
     with tab_upload:
