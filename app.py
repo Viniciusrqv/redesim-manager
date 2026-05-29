@@ -224,6 +224,153 @@ def _invalidar_cache_db():
     _cache_tarefas_gestta_pendentes.clear()
 
 
+# =====================================================================
+# Wrapper: atualizar_status_protocolo + replicar no GESTTA
+# ---------------------------------------------------------------------
+# Eduardo pediu que TODA mudança de status de protocolo REDESIM seja
+# automaticamente registrada como ANOTAÇÃO na tarefa GESTTA vinculada,
+# usando o JWT do USUÁRIO LOGADO (não o global). Quando o status é
+# terminal (Aprovada/Concluída), também aparece um aviso visível
+# orientando o usuário a CONCLUIR a tarefa diretamente no GESTTA.
+# =====================================================================
+def _replicar_status_no_gestta(
+    protocolo: dict, novo_status: str,
+    observacoes: str | None = None,
+) -> dict:
+    """Envia anotação no GESTTA da tarefa vinculada ao protocolo.
+
+    - Usa o JWT do usuário LOGADO (obter_jwt_gestta_efetivo).
+    - Se o protocolo não tem tarefa vinculada → não faz nada.
+    - Retorna {ok, mensagem, finalizou}.
+
+    finalizou=True quando o status é Aprovada/Concluída — sinal pra UI
+    mostrar o aviso "✋ conclua a tarefa no GESTTA".
+    """
+    from database import (
+        obter_jwt_gestta_efetivo,
+        STATUS_PROTOCOLO_OK,
+    )
+    from auth import usuario_atual as _u_at
+
+    out = {"ok": False, "mensagem": "", "finalizou": False, "tarefa": None}
+
+    # Acha tarefa vinculada
+    try:
+        from database import get_conn as _gc
+        with _gc() as conn:
+            r = conn.execute(
+                """SELECT id, gestta_id, tarefa_nome, cliente_nome,
+                          responsavel
+                   FROM tarefas_gestta
+                   WHERE protocolo_id = ? AND resolvida = 0
+                   ORDER BY id DESC LIMIT 1""",
+                (protocolo["id"],),
+            ).fetchone()
+        if not r:
+            out["mensagem"] = "Sem tarefa GESTTA vinculada"
+            return out
+        tarefa = dict(r)
+    except Exception as exc:
+        out["mensagem"] = f"Erro buscando tarefa: {exc}"
+        return out
+
+    out["tarefa"] = tarefa
+    gid = tarefa.get("gestta_id")
+    if not gid:
+        out["mensagem"] = (
+            "Tarefa vinculada mas sem gestta_id "
+            "(provavelmente vinda de XLSX antigo, não da API)"
+        )
+        return out
+
+    # JWT do usuário logado
+    _u = _u_at() or {}
+    jwt = obter_jwt_gestta_efetivo(_u.get("email"))
+    if not jwt:
+        out["mensagem"] = (
+            "Sem JWT GESTTA configurado pro usuário logado — "
+            "cadastre em ⚙️ Configurações → Meu GESTTA"
+        )
+        return out
+
+    # Monta mensagem
+    bolinha = {
+        "Em análise": "🟡",
+        "Pendente de avaliação do risco": "🟡",
+        "Aprovada": "🟢",
+        "Concluída": "🟢",
+        "Indeferida": "🔴",
+        "Cancelada": "🔴",
+        "Inativa": "🔴",
+    }.get(novo_status, "🔵")
+
+    autor = _u.get("nome") or _u.get("email") or "Equipe CSM"
+    texto = (
+        f"[REDESIM Manager] {bolinha} Status atualizado para "
+        f"{novo_status} — Protocolo "
+        f"{protocolo.get('numero_protocolo') or '?'} "
+        f"({protocolo.get('tipo') or '?'})."
+    )
+    if observacoes:
+        texto += f"\n\nObservações: {observacoes}"
+    texto += f"\n\n— {autor}"
+
+    # Envia via API GESTTA
+    try:
+        from utils.gestta_api import GesttaClient
+        cli = GesttaClient(jwt)
+        cli.adicionar_comentario_tarefa(gid, texto, external=False)
+        out["ok"] = True
+        out["mensagem"] = "Anotação enviada ao GESTTA ✅"
+    except Exception as exc:
+        out["mensagem"] = f"Falha ao enviar anotação: {exc}"
+        return out
+
+    # Sinal de "concluir a tarefa" quando o protocolo finaliza
+    if novo_status in STATUS_PROTOCOLO_OK:
+        out["finalizou"] = True
+
+    return out
+
+
+def atualizar_status_protocolo_com_gestta(
+    protocolo_id: int, novo_status: str,
+    observacoes: str | None = None,
+) -> tuple[dict | None, dict]:
+    """Atualiza status no banco + replica anotação no GESTTA do
+    usuário logado. Retorna (protocolo_atualizado, info_replicacao).
+    """
+    atualizado = atualizar_status_protocolo(
+        protocolo_id, novo_status, observacoes=observacoes,
+    )
+    info = {"ok": False}
+    if atualizado:
+        try:
+            info = _replicar_status_no_gestta(
+                atualizado, novo_status, observacoes,
+            )
+        except Exception as exc:
+            info = {"ok": False, "mensagem": str(exc)}
+    return atualizado, info
+
+
+def _mostrar_feedback_gestta(info: dict, novo_status: str):
+    """Mostra mensagem de sucesso/aviso após replicar pro GESTTA."""
+    if info.get("ok"):
+        st.info(f"📝 {info.get('mensagem', 'Anotação enviada')}")
+        if info.get("finalizou"):
+            tarefa = info.get("tarefa") or {}
+            st.warning(
+                f"✋ **PRÓXIMO PASSO:** Conclua manualmente a tarefa "
+                f"**{tarefa.get('tarefa_nome', '—')}** "
+                f"no GESTTA. A anotação já foi postada lá. "
+                f"[Abrir GESTTA](https://app.gestta.com.br)"
+            )
+    elif info.get("mensagem"):
+        # Avisa o motivo, mas não bloqueia o fluxo
+        st.caption(f"ℹ️ GESTTA: {info['mensagem']}")
+
+
 # Habilita o corretor ortográfico do navegador (em pt-BR) em todos os
 # campos de texto e textareas. O Streamlit não seta `spellcheck` por
 # padrão, então injetamos um pequeno script com MutationObserver que
@@ -999,11 +1146,15 @@ def _bloco_protocolos_redesim_dashboard():
                                     "Inativa) exige observação."
                                 )
                             else:
-                                atualizar_status_protocolo(
-                                    p_sel["id"], novo,
-                                    observacoes=obs or None,
-                                )
+                                _, info_g = \
+                                    atualizar_status_protocolo_com_gestta(
+                                        p_sel["id"], novo,
+                                        observacoes=obs or None,
+                                    )
                                 st.toast(f"Status atualizado para {novo}.")
+                                _mostrar_feedback_gestta(info_g, novo)
+                                import time as _time
+                                _time.sleep(1.0)
                                 st.rerun()
 
                     if st.button(
@@ -4432,11 +4583,14 @@ def pagina_empresas_redesim():
                                     "abrir novo' ou 'Vai direto no órgão'."
                                 )
                             else:
-                                atualizado = atualizar_status_protocolo(
-                                    proto["id"],
-                                    novo_status,
-                                    observacoes=(nova_obs.strip() or None),
-                                )
+                                atualizado, info_g = \
+                                    atualizar_status_protocolo_com_gestta(
+                                        proto["id"],
+                                        novo_status,
+                                        observacoes=(
+                                            nova_obs.strip() or None
+                                        ),
+                                    )
                                 if atualizado:
                                     st.success(
                                         f"✅ Status atualizado para "
@@ -4445,6 +4599,13 @@ def pagina_empresas_redesim():
                                         + (" Motivo registrado no histórico."
                                            if obs_obrigatoria else "")
                                     )
+                                    _mostrar_feedback_gestta(
+                                        info_g, novo_status,
+                                    )
+                                    # Pequeno delay pra usuario ler o feedback
+                                    # do GESTTA antes do rerun (1.2s)
+                                    import time as _time
+                                    _time.sleep(1.2)
                                     st.rerun()
                                 else:
                                     st.error("Falha ao atualizar protocolo.")
@@ -4783,6 +4944,162 @@ def _salvar_anotacao_e_replicar(
 # =====================================================================
 # Tarefas GESTTA — abas dedicadas (Regularização + Devolução)
 # =====================================================================
+def _renderizar_form_distrato(tarefa: dict):
+    """Formulário inline para gerar termo de distrato.
+
+    Coleta iniciativa, data de efeito e motivo, busca os dados da
+    empresa vinculada (com fallback no cache de CNPJ), e gera Word + PDF
+    em LICENÇAS/distratos/.
+    """
+    from utils.gerador_distrato import gerar_distrato
+    from database import (
+        buscar_empresa_por_cnpj as _bcnpj,
+        cache_cnpj_get as _cache_get,
+    )
+    import os as _os
+
+    tid = tarefa["id"]
+    empresa_id = tarefa.get("empresa_id")
+    nome_cliente = tarefa.get("cliente_nome") or "—"
+
+    # ===== Levantamento dos dados da empresa =====
+    dados_empresa = None
+    if empresa_id:
+        # Tenta achar dados ricos no cache de consulta CNPJ
+        with st.spinner("Buscando dados da empresa..."):
+            try:
+                from db import get_connection as _gc
+                with _gc() as conn:
+                    r = conn.execute(
+                        "SELECT * FROM empresas WHERE id = ?",
+                        (empresa_id,),
+                    ).fetchone()
+                if r:
+                    emp_row = dict(r)
+                    cnpj = emp_row.get("cnpj") or ""
+                    cached = _cache_get(cnpj) if cnpj else None
+                    if cached:
+                        dados_empresa = cached
+                    else:
+                        # Monta com o que tem no banco local
+                        dados_empresa = {
+                            "razao_social": emp_row.get("razao_social"),
+                            "cnpj": cnpj,
+                            "endereco": {
+                                "logradouro": emp_row.get("endereco") or "",
+                                "municipio": emp_row.get("municipio") or "",
+                                "uf": emp_row.get("uf") or "",
+                            },
+                            "socios": [],
+                        }
+            except Exception as exc:
+                st.warning(f"Não consegui ler dados da empresa: {exc}")
+
+    if not dados_empresa:
+        st.warning(
+            "⚠️ Sem dados de empresa vinculada. Posso gerar o distrato "
+            "com o NOME DO CLIENTE GESTTA, mas sem CNPJ/endereço. "
+            "Pra ter os dados completos, vincule a tarefa a uma empresa "
+            "no botão abaixo do card."
+        )
+        dados_empresa = {
+            "razao_social": nome_cliente,
+            "cnpj": "",
+            "endereco": {},
+            "socios": [],
+        }
+
+    # Mostra o que vai ser preenchido
+    with st.expander("👀 Dados da empresa que serão usados", expanded=False):
+        st.json({
+            "razao_social": dados_empresa.get("razao_social"),
+            "cnpj": dados_empresa.get("cnpj"),
+            "endereco": dados_empresa.get("endereco"),
+            "qtde_socios": len(dados_empresa.get("socios") or []),
+        })
+
+    # ===== Formulário =====
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        iniciativa = st.radio(
+            "Iniciativa do distrato",
+            options=[
+                ("consensual", "🤝 Consensual (ambas concordam)"),
+                ("cliente", "👤 Cliente pediu pra sair"),
+                ("escritorio", "🏢 Escritório decidiu encerrar"),
+            ],
+            format_func=lambda x: x[1],
+            key=f"distrato_inic_{tid}",
+        )
+    with fc2:
+        from datetime import date as _date
+        data_efeito = st.date_input(
+            "Data de efeito",
+            value=_date.today(),
+            key=f"distrato_data_{tid}",
+            format="DD/MM/YYYY",
+        )
+
+    motivo = st.text_area(
+        "Motivo (opcional — vai entrar como observação na cláusula 2ª)",
+        key=f"distrato_motivo_{tid}",
+        placeholder=(
+            "Ex.: Cliente migrou para o escritório XYZ por proximidade "
+            "geográfica. Sem pendências de honorários."
+        ),
+        height=70,
+    )
+
+    bb1, bb2 = st.columns([1, 1])
+    with bb1:
+        if st.button(
+            "🚀 Gerar Word + PDF agora",
+            key=f"distrato_go_{tid}",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                # Pasta de saída na workspace do usuário
+                pasta = "/sessions/admiring-friendly-lovelace/mnt/LICENÇAS/distratos"
+                _os.makedirs(pasta, exist_ok=True)
+
+                with st.spinner("Gerando documento..."):
+                    res = gerar_distrato(
+                        dados_empresa=dados_empresa,
+                        iniciativa=iniciativa[0],
+                        data_efeito=str(data_efeito),
+                        motivo=motivo.strip() or None,
+                        pasta_destino=pasta,
+                        gerar_pdf=True,
+                    )
+
+                st.success("✅ Distrato gerado!")
+                # Links pros arquivos
+                if res.get("pdf"):
+                    st.markdown(
+                        f"📄 [Abrir PDF](computer://{res['pdf']})"
+                    )
+                if res.get("docx"):
+                    st.markdown(
+                        f"📝 [Abrir Word]"
+                        f"(computer://{res['docx']})"
+                    )
+                st.caption(
+                    f"Arquivos salvos em `LICENÇAS/distratos/"
+                    f"{res['filename_base']}.{{docx,pdf}}`"
+                )
+            except Exception as exc:
+                st.error(f"Falha ao gerar: {exc}")
+    with bb2:
+        if st.button(
+            "❌ Cancelar",
+            key=f"distrato_cancel_{tid}",
+            use_container_width=True,
+        ):
+            st.session_state.pop("_abrir_distrato_modal_tid", None)
+            st.rerun()
+
+
 def _aba_regularizacao():
     """Visão focada em Licença de Funcionamento + Alvará Sanitário +
     Bombeiros. Mostra atrasadas no topo, agrupadas por tipo.
@@ -5075,14 +5392,18 @@ def _render_card_tarefa_compacta(t: dict, mostrar_distrato: bool = False):
                     key=f"compact_distr_{t['id']}",
                     use_container_width=True,
                     type="primary",
-                    help="Gera um Word com o contrato de distrato pré-preenchido.",
+                    help="Gera Word + PDF do distrato pré-preenchido.",
                 ):
-                    st.session_state["distrato_tarefa_id"] = t["id"]
-                    st.info(
-                        "⚠️ Gerador de distrato disponível em breve "
-                        "(próximo deploy). Por enquanto, anote o ID "
-                        f"da tarefa: **{t['id']}**."
-                    )
+                    st.session_state[
+                        "_abrir_distrato_modal_tid"
+                    ] = t["id"]
+
+    # Se essa é a tarefa selecionada pra gerar distrato, mostra o modal
+    if (mostrar_distrato and
+            st.session_state.get("_abrir_distrato_modal_tid") == t["id"]):
+        with st.container(border=True):
+            st.markdown("#### 📝 Gerar Termo de Distrato")
+            _renderizar_form_distrato(t)
 
 
 def pagina_tarefas_gestta():
