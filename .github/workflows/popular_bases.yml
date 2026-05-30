@@ -55,6 +55,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install psycopg2-binary python-dotenv unidecode
 
+      - name: Validar acesso ao Supabase
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "❌ ERRO: secret DATABASE_URL NÃO está configurado no GitHub."
+            echo ""
+            echo "Vá em:"
+            echo "https://github.com/Viniciusrqv/redesim-manager/settings/secrets/actions"
+            echo ""
+            echo "Clique em 'New repository secret' e adicione:"
+            echo "  Name:  DATABASE_URL"
+            echo "  Value: (a connection string completa do Supabase Pooler)"
+            echo ""
+            exit 1
+          fi
+          # Mostra só o prefixo (não vaza credencial)
+          PREFIX=$(echo "$DATABASE_URL" | cut -c1-30)
+          echo "✓ DATABASE_URL configurado (prefixo: ${PREFIX}...)"
+          # Testa conexão real
+          python -c "
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ['DATABASE_URL'], connect_timeout=10)
+          cur = conn.cursor()
+          cur.execute('SELECT current_database(), current_user')
+          db, user = cur.fetchone()
+          print(f'✓ Conectado ao Postgres: db={db} user={user}')
+          conn.close()
+          "
+
       - name: Popular catálogo de órgãos oficiais
         if: ${{ inputs.rodar_orgaos == 'true' }}
         env:

@@ -318,11 +318,11 @@ DDL = [
     ON tarefas_gestta(resolvida);
     """,
     """
-    CREATE INDEX IF NOT EXISTS idx_gestta_tipo
-    ON tarefas_gestta(tipo);
+    ALTER TABLE tarefas_gestta ADD COLUMN IF NOT EXISTS tipo TEXT;
     """,
     """
-    ALTER TABLE tarefas_gestta ADD COLUMN tipo TEXT;
+    CREATE INDEX IF NOT EXISTS idx_gestta_tipo
+    ON tarefas_gestta(tipo);
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_gestta_risco
