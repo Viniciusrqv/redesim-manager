@@ -25,6 +25,7 @@ from scheduler import (
     checar_documentos_vencendo,
     checar_avcb_vencendo,
     checar_pendencias_gerais,
+    checar_cobrancas_dominio,
 )
 
 
@@ -34,16 +35,18 @@ def main():
     print(f"  RODADA MANUAL DE ALERTAS — {datetime.now():%d/%m/%Y %H:%M:%S}")
     print("=" * 60)
     print()
-    print("[1/5] Processos parados...")
+    print("[1/6] Processos parados...")
     checar_atrasos()
-    print("[2/5] Protocolos REDESIM em andamento...")
+    print("[2/6] Protocolos REDESIM em andamento...")
     checar_protocolos_redesim()
-    print("[3/5] Documentos com vencimento...")
+    print("[3/6] Documentos com vencimento...")
     checar_documentos_vencendo()
-    print("[4/5] Alvarás AVCB/CLCB...")
+    print("[4/6] Alvarás AVCB/CLCB...")
     checar_avcb_vencendo()
-    print("[5/5] Pendências gerais...")
+    print("[5/6] Pendências gerais...")
     checar_pendencias_gerais()
+    print("[6/6] Cobranças DOMÍNIO pendentes...")
+    checar_cobrancas_dominio()
     print()
     print("=" * 60)
     print("Confira o Telegram para ver os alertas que foram disparados.")

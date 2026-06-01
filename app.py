@@ -338,8 +338,18 @@ def atualizar_status_protocolo_com_gestta(
     observacoes: str | None = None,
 ) -> tuple[dict | None, dict]:
     """Atualiza status no banco + replica anotação no GESTTA do
-    usuário logado. Retorna (protocolo_atualizado, info_replicacao).
+    usuário logado + cria cobrança DOMÍNIO pendente se terminal.
+    Retorna (protocolo_atualizado, info_replicacao). A info pode ter
+    'cobranca_criada_id' (int) se uma cobrança foi gerada.
     """
+    from database import (
+        STATUS_PROTOCOLO_OK,
+        _classificar_tipo_cobranca,
+        criar_cobranca_pendente,
+        garantir_valores_cobranca_padrao,
+    )
+    from auth import usuario_atual as _u_at
+
     atualizado = atualizar_status_protocolo(
         protocolo_id, novo_status, observacoes=observacoes,
     )
@@ -351,6 +361,40 @@ def atualizar_status_protocolo_com_gestta(
             )
         except Exception as exc:
             info = {"ok": False, "mensagem": str(exc)}
+
+        # GANCHO COBRANÇA DOMÍNIO: se virou status terminal positivo,
+        # cria cobrança automaticamente
+        if novo_status in STATUS_PROTOCOLO_OK:
+            try:
+                garantir_valores_cobranca_padrao()
+                tarefa_gestta = info.get("tarefa") or {}
+                tipo_cob = _classificar_tipo_cobranca(
+                    atualizado,
+                    tarefa_gestta.get("tarefa_nome"),
+                )
+                _u = _u_at() or {}
+                cob_id = criar_cobranca_pendente(
+                    cliente_nome=atualizado.get("razao_social", "—"),
+                    cliente_cnpj=atualizado.get("cnpj"),
+                    empresa_id=atualizado.get("empresa_id"),
+                    protocolo_id=atualizado.get("id"),
+                    gestta_task_id=tarefa_gestta.get("gestta_id"),
+                    tipo_servico=tipo_cob,
+                    descricao=(
+                        f"Protocolo {atualizado.get('numero_protocolo', '?')} "
+                        f"({atualizado.get('tipo', '?')}) — "
+                        f"{novo_status}"
+                    ),
+                    responsavel=(
+                        _u.get("nome") or _u.get("email") or
+                        atualizado.get("responsavel")
+                    ),
+                )
+                info["cobranca_criada_id"] = cob_id
+                info["cobranca_tipo"] = tipo_cob
+            except Exception as exc:
+                info["cobranca_erro"] = str(exc)
+
     return atualizado, info
 
 
@@ -368,6 +412,21 @@ def _mostrar_feedback_gestta(info: dict, novo_status: str):
             )
     elif info.get("mensagem"):
         # Avisa o motivo, mas não bloqueia o fluxo
+        pass
+
+    # Feedback de cobrança automática
+    if info.get("cobranca_criada_id"):
+        tipo_cob = info.get("cobranca_tipo", "OUTRO")
+        from database import VALORES_COBRANCA_PADRAO
+        _, valor_def = VALORES_COBRANCA_PADRAO.get(tipo_cob, ("", 0))
+        st.success(
+            f"💰 **COBRANÇA DOMÍNIO criada automaticamente** "
+            f"(R$ {valor_def:.2f}). Lembrete vai pro seu Telegram. "
+            f"Veja em **💰 Cobranças DOMÍNIO** no menu."
+        )
+    if info.get("cobranca_erro"):
+        st.caption(f"⚠️ Falha ao criar cobrança: {info['cobranca_erro']}")
+    if info.get("mensagem") and not info.get("ok"):
         st.caption(f"ℹ️ GESTTA: {info['mensagem']}")
 
 
@@ -8184,6 +8243,262 @@ def _pkg_existe(nome: str) -> bool:
 
 
 # ---------------------------------------------------------
+# PÁGINA — 💰 Cobranças DOMÍNIO (Thomson Reuters)
+# ---------------------------------------------------------
+def pagina_cobrancas_dominio():
+    st.header("💰 Cobranças DOMÍNIO — Renovações concluídas")
+    st.caption(
+        "Toda renovação de licença concluída no app gera "
+        "AUTOMATICAMENTE uma cobrança pendente aqui. Quando você "
+        "lançar no DOMÍNIO (Thomson Reuters), marque como 'Lançada' "
+        "pra sair desta lista."
+    )
+
+    from database import (
+        garantir_valores_cobranca_padrao,
+        listar_cobrancas_pendentes,
+        listar_valores_cobranca,
+        atualizar_valor_cobranca,
+        marcar_cobranca_lancada,
+        cancelar_cobranca,
+        criar_cobranca_pendente,
+        contar_cobrancas_pendentes,
+        total_pendente_cobranca,
+        TIPO_COB_LICENCA_REDESIM, TIPO_COB_VISA,
+        TIPO_COB_AVCB, TIPO_COB_OUTRO,
+        VALORES_COBRANCA_PADRAO,
+    )
+    from auth import usuario_atual as _u_at
+
+    garantir_valores_cobranca_padrao()
+    _u = _u_at() or {}
+    quem = _u.get("nome") or _u.get("email") or "—"
+
+    # === Cards-resumo ===
+    qtd = contar_cobrancas_pendentes()
+    total = total_pendente_cobranca()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("📌 Pendentes", qtd)
+    with c2:
+        st.metric("💵 Total a lançar", f"R$ {total:,.2f}".replace(",","X").replace(".",",").replace("X","."))
+    with c3:
+        st.metric("👤 Responsável", quem.split()[0] if quem else "—")
+
+    if qtd == 0:
+        st.success(
+            "🎉 Nenhuma cobrança pendente. Tudo lançado no DOMÍNIO!"
+        )
+    else:
+        st.markdown("---")
+
+    tab_pend, tab_lanc, tab_val, tab_manual = st.tabs([
+        f"📌 Pendentes ({qtd})",
+        "✅ Lançadas",
+        "⚙️ Valores sugeridos",
+        "➕ Criar manual",
+    ])
+
+    # ============== TAB 1: Pendentes ==============
+    with tab_pend:
+        if qtd == 0:
+            st.info("Nada pra lançar agora.")
+        else:
+            pends = listar_cobrancas_pendentes(status="pendente")
+            for cb in pends:
+                tipo_label = {
+                    "LICENCA_REDESIM": "📋 Licença REDESIM",
+                    "VISA": "🏥 Vigilância Sanitária",
+                    "AVCB": "🚒 AVCB Bombeiros",
+                    "OUTRO": "📌 Outro",
+                }.get(cb.get("tipo_servico"), cb.get("tipo_servico", "?"))
+                valor_str = f"R$ {(cb.get('valor_sugerido') or 0):.2f}".replace(".",",")
+
+                with st.container(border=True):
+                    cc1, cc2 = st.columns([3, 1])
+                    with cc1:
+                        st.markdown(
+                            f"### {cb.get('cliente_nome', '—')}"
+                        )
+                        info = []
+                        info.append(f"**Tipo:** {tipo_label}")
+                        info.append(f"**Valor:** {valor_str}")
+                        if cb.get("cliente_cnpj"):
+                            info.append(f"**CNPJ:** {cb['cliente_cnpj']}")
+                        if cb.get("descricao"):
+                            info.append(f"**Origem:** {cb['descricao']}")
+                        st.markdown(" · ".join(info))
+                        st.caption(
+                            f"Criada em {(cb.get('criado_em') or '')[:16]} "
+                            f"· responsável: {cb.get('responsavel') or '—'}"
+                        )
+                    with cc2:
+                        valor_real = st.number_input(
+                            "Valor real lançado",
+                            min_value=0.0,
+                            value=float(cb.get("valor_sugerido") or 0),
+                            step=10.0, format="%.2f",
+                            key=f"cob_val_{cb['id']}",
+                        )
+                        obs_lanc = st.text_input(
+                            "Obs (opcional)",
+                            key=f"cob_obs_{cb['id']}",
+                            placeholder="Ex.: parcelado em 2x",
+                        )
+                        bcol1, bcol2 = st.columns(2)
+                        with bcol1:
+                            if st.button(
+                                "✅ Lancei",
+                                key=f"cob_lanc_{cb['id']}",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                marcar_cobranca_lancada(
+                                    cb["id"],
+                                    valor_lancado=valor_real,
+                                    lancado_por=quem,
+                                    observacao=obs_lanc or None,
+                                )
+                                st.toast("✅ Cobrança baixada!")
+                                st.rerun()
+                        with bcol2:
+                            if st.button(
+                                "❌ Cancelar",
+                                key=f"cob_canc_{cb['id']}",
+                                use_container_width=True,
+                                help="Marca como cancelada (não vai cobrar).",
+                            ):
+                                cancelar_cobranca(
+                                    cb["id"],
+                                    motivo=obs_lanc or "cancelada pelo usuário",
+                                )
+                                st.toast("Cobrança cancelada.")
+                                st.rerun()
+
+    # ============== TAB 2: Lançadas ==============
+    with tab_lanc:
+        lancadas = listar_cobrancas_pendentes(status="lancada")
+        if not lancadas:
+            st.info("Nenhuma cobrança lançada ainda.")
+        else:
+            import pandas as _pd
+            df = _pd.DataFrame([{
+                "Cliente": l.get("cliente_nome"),
+                "Tipo": l.get("tipo_servico"),
+                "Valor lançado": f"R$ {(l.get('valor_lancado') or 0):.2f}",
+                "Lançada em": (l.get("lancado_em") or "")[:16],
+                "Por": l.get("lancado_por"),
+                "Obs": l.get("observacao") or "",
+            } for l in lancadas])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            total_lanc = sum(
+                float(l.get("valor_lancado") or 0) for l in lancadas
+            )
+            st.success(
+                f"💵 **Total já lançado:** "
+                f"R$ {total_lanc:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                + f" em {len(lancadas)} cobrança(s)"
+            )
+
+    # ============== TAB 3: Valores sugeridos ==============
+    with tab_val:
+        st.markdown(
+            "Configure os valores padrão usados quando o sistema cria "
+            "uma cobrança automaticamente. Você ainda pode ajustar o "
+            "valor de cada cobrança individualmente na hora de lançar."
+        )
+        valores = listar_valores_cobranca()
+        for v in valores:
+            with st.container(border=True):
+                vcol1, vcol2, vcol3 = st.columns([2, 2, 1])
+                with vcol1:
+                    st.markdown(f"**{v.get('descricao')}**")
+                    st.caption(f"código: `{v['tipo_servico']}`")
+                with vcol2:
+                    novo_val = st.number_input(
+                        "Valor sugerido (R$)",
+                        min_value=0.0,
+                        value=float(v["valor_sugerido"]),
+                        step=10.0, format="%.2f",
+                        key=f"vsug_{v['tipo_servico']}",
+                    )
+                with vcol3:
+                    st.markdown("<div style='height:28px'></div>",
+                                unsafe_allow_html=True)
+                    if st.button(
+                        "💾 Atualizar",
+                        key=f"vsav_{v['tipo_servico']}",
+                        use_container_width=True,
+                    ):
+                        atualizar_valor_cobranca(
+                            v["tipo_servico"], novo_val,
+                            atualizado_por=quem,
+                        )
+                        st.toast("Valor atualizado.")
+                        st.rerun()
+
+    # ============== TAB 4: Criar manual ==============
+    with tab_manual:
+        st.markdown(
+            "Use quando você fez uma renovação manualmente (sem usar "
+            "o sistema) e quer registrar a cobrança aqui pra não "
+            "esquecer de lançar no DOMÍNIO."
+        )
+        mcol1, mcol2 = st.columns(2)
+        with mcol1:
+            mc_cli = st.text_input(
+                "Cliente (razão social)",
+                key="cobm_cli",
+            )
+            mc_cnpj = st.text_input(
+                "CNPJ (opcional)",
+                key="cobm_cnpj",
+                placeholder="00.000.000/0000-00",
+            )
+        with mcol2:
+            mc_tipo = st.selectbox(
+                "Tipo de serviço",
+                options=[
+                    TIPO_COB_LICENCA_REDESIM,
+                    TIPO_COB_VISA,
+                    TIPO_COB_AVCB,
+                    TIPO_COB_OUTRO,
+                ],
+                format_func=lambda x: {
+                    "LICENCA_REDESIM": "📋 Licença REDESIM (R$ 250)",
+                    "VISA": "🏥 Vigilância Sanitária (R$ 600)",
+                    "AVCB": "🚒 AVCB Bombeiros (R$ 500)",
+                    "OUTRO": "📌 Outro (R$ 300)",
+                }.get(x, x),
+                key="cobm_tipo",
+            )
+            mc_desc = st.text_input(
+                "Descrição (opcional)",
+                key="cobm_desc",
+                placeholder="Ex.: Renovação licença Cotia",
+            )
+        if st.button(
+            "➕ Criar cobrança pendente",
+            type="primary",
+            use_container_width=True,
+            key="btn_cobm_criar",
+        ):
+            if not mc_cli.strip():
+                st.error("Preencha o cliente.")
+            else:
+                cob_id = criar_cobranca_pendente(
+                    cliente_nome=mc_cli.strip(),
+                    cliente_cnpj=mc_cnpj.strip() or None,
+                    tipo_servico=mc_tipo,
+                    descricao=mc_desc.strip() or None,
+                    responsavel=quem,
+                )
+                st.success(f"✅ Cobrança #{cob_id} criada.")
+                st.rerun()
+
+
+# ---------------------------------------------------------
 # PÁGINA — 📚 Base de Regras Oficiais por CNAE × Órgão
 # ---------------------------------------------------------
 def pagina_base_regras():
@@ -8524,6 +8839,7 @@ PAGINAS = {
     "📋 Tarefas GESTTA": pagina_tarefas_gestta,
     "📌 Pendências Gerais": pagina_pendencias,
     "🔬 Consultor de CNAE": pagina_consulta_cnae,
+    "💰 Cobranças DOMÍNIO": pagina_cobrancas_dominio,
     "📚 Base de Regras": pagina_base_regras,
     "🏷️ Classificador CNAE": pagina_classificador,
     "📋 Matriz de Risco CNAE": pagina_matriz_risco,

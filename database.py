@@ -519,6 +519,49 @@ DDL = [
         atualizado_em TEXT DEFAULT (datetime('now', 'localtime'))
     );
     """,
+    # Cobranças pendentes de lançamento no DOMÍNIO. Eduardo cobra
+    # via Thomson Reuters DOMÍNIO mas esquece — o sistema cria a
+    # cobrança automaticamente quando ele marca um protocolo como
+    # Concluída/Aprovada, com valor sugerido baseado no tipo, e
+    # avisa por Telegram + dashboard até ele marcar como "lançada".
+    """
+    CREATE TABLE IF NOT EXISTS cobrancas_dominio (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id      INTEGER,
+        protocolo_id    INTEGER,
+        gestta_task_id  TEXT,
+        tipo_servico    TEXT NOT NULL,   -- LICENCA_REDESIM / VISA / AVCB / OUTRO
+        cliente_nome    TEXT NOT NULL,
+        cliente_cnpj    TEXT,
+        valor_sugerido  REAL NOT NULL DEFAULT 0,
+        valor_lancado   REAL,
+        descricao       TEXT,
+        responsavel     TEXT,
+        status          TEXT NOT NULL DEFAULT 'pendente',   -- pendente / lancada / cancelada
+        criado_em       TEXT DEFAULT (datetime('now', 'localtime')),
+        lancado_em      TEXT,
+        lancado_por     TEXT,
+        observacao      TEXT,
+        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE SET NULL,
+        FOREIGN KEY(protocolo_id) REFERENCES protocolos_redesim(id) ON DELETE SET NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cobrancas_status
+    ON cobrancas_dominio(status);
+    """,
+    # Tabela de valores sugeridos por tipo de serviço (configurável).
+    # Eduardo informou: Licença Funcionamento via REDESIM = R$ 250
+    # e Vigilância Sanitária = R$ 600.
+    """
+    CREATE TABLE IF NOT EXISTS tabela_valores_cobranca (
+        tipo_servico    TEXT PRIMARY KEY,
+        descricao       TEXT,
+        valor_sugerido  REAL NOT NULL,
+        atualizado_em   TEXT DEFAULT (datetime('now', 'localtime')),
+        atualizado_por  TEXT
+    );
+    """,
     # GESTTA JWT por usuário: cada usuário do REDESIM Manager pode
     # vincular o JWT do PRÓPRIO usuário GESTTA. Isso permite que
     # buscas/comentários no GESTTA respeitem as permissões da pessoa
@@ -4275,6 +4318,219 @@ def listar_orgaos(categoria: str | None = None,
     sql += " ORDER BY categoria, esfera, sigla, COALESCE(uf, '')"
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+
+# ====================================================================
+# Cobranças DOMÍNIO (Thomson Reuters)
+# ====================================================================
+TIPO_COB_LICENCA_REDESIM = "LICENCA_REDESIM"
+TIPO_COB_VISA            = "VISA"
+TIPO_COB_AVCB            = "AVCB"
+TIPO_COB_OUTRO           = "OUTRO"
+
+# Valores informados pelo Eduardo (01/06/2026) — podem ser ajustados
+# pela UI em ⚙️ Configurações
+VALORES_COBRANCA_PADRAO = {
+    TIPO_COB_LICENCA_REDESIM: ("Licença de Funcionamento via REDESIM", 250.0),
+    TIPO_COB_VISA:            ("Vigilância Sanitária (renovação)",     600.0),
+    TIPO_COB_AVCB:            ("AVCB / CLCB — Bombeiros",              500.0),
+    TIPO_COB_OUTRO:           ("Outro serviço de regularização",       300.0),
+}
+
+
+def garantir_valores_cobranca_padrao() -> None:
+    """Garante que a tabela tem os valores default. Idempotente."""
+    with get_conn() as conn:
+        for tipo, (desc, valor) in VALORES_COBRANCA_PADRAO.items():
+            ja = conn.execute(
+                "SELECT tipo_servico FROM tabela_valores_cobranca "
+                "WHERE tipo_servico = ?",
+                (tipo,),
+            ).fetchone()
+            if not ja:
+                conn.execute(
+                    "INSERT INTO tabela_valores_cobranca "
+                    "(tipo_servico, descricao, valor_sugerido) "
+                    "VALUES (?, ?, ?)",
+                    (tipo, desc, valor),
+                )
+
+
+def listar_valores_cobranca() -> list[dict]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM tabela_valores_cobranca ORDER BY tipo_servico"
+        ).fetchall()]
+
+
+def atualizar_valor_cobranca(
+    tipo: str, valor: float, *, descricao: str | None = None,
+    atualizado_por: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        existe = conn.execute(
+            "SELECT tipo_servico FROM tabela_valores_cobranca "
+            "WHERE tipo_servico = ?",
+            (tipo,),
+        ).fetchone()
+        if existe:
+            conn.execute(
+                "UPDATE tabela_valores_cobranca SET valor_sugerido = ?, "
+                "descricao = COALESCE(?, descricao), "
+                "atualizado_em = datetime('now','localtime'), "
+                "atualizado_por = ? WHERE tipo_servico = ?",
+                (valor, descricao, atualizado_por, tipo),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO tabela_valores_cobranca "
+                "(tipo_servico, descricao, valor_sugerido, atualizado_por) "
+                "VALUES (?, ?, ?, ?)",
+                (tipo, descricao or tipo, valor, atualizado_por),
+            )
+
+
+def _classificar_tipo_cobranca(
+    protocolo: dict, gestta_task_nome: str | None = None,
+) -> str:
+    """Decide qual tipo de cobrança usar baseado no protocolo + tarefa."""
+    nome = (gestta_task_nome or "").upper()
+    tipo_prot = (protocolo.get("tipo") or "").upper()
+
+    if "BOMBEIRO" in nome or "AVCB" in nome or "CLCB" in nome:
+        return TIPO_COB_AVCB
+    if "SANIT" in nome or "VISA" in nome or "VIGILANCIA" in nome:
+        return TIPO_COB_VISA
+    if "LICEN" in nome or "FUNCIONAMENTO" in nome or "REDESIM" in tipo_prot:
+        return TIPO_COB_LICENCA_REDESIM
+    return TIPO_COB_OUTRO
+
+
+def criar_cobranca_pendente(
+    *,
+    cliente_nome: str,
+    tipo_servico: str = TIPO_COB_LICENCA_REDESIM,
+    empresa_id: int | None = None,
+    protocolo_id: int | None = None,
+    gestta_task_id: str | None = None,
+    cliente_cnpj: str | None = None,
+    descricao: str | None = None,
+    valor_override: float | None = None,
+    responsavel: str | None = None,
+) -> int:
+    """Cria uma cobrança pendente. Usa valor da tabela_valores se não
+    foi passado override. Retorna o id da cobrança criada."""
+    # Pega valor sugerido
+    valor = valor_override
+    if valor is None:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT valor_sugerido FROM tabela_valores_cobranca "
+                "WHERE tipo_servico = ?",
+                (tipo_servico,),
+            ).fetchone()
+            if r:
+                valor = float(dict(r)["valor_sugerido"])
+        if valor is None:
+            valor = VALORES_COBRANCA_PADRAO.get(
+                tipo_servico,
+                ("Outro", 300.0),
+            )[1]
+
+    with get_conn() as conn:
+        # Anti-duplicação: se já existe cobrança pendente pra mesmo
+        # protocolo, retorna o id existente
+        if protocolo_id:
+            ja = conn.execute(
+                "SELECT id FROM cobrancas_dominio WHERE "
+                "protocolo_id = ? AND status = 'pendente'",
+                (protocolo_id,),
+            ).fetchone()
+            if ja:
+                return int(dict(ja)["id"])
+        if gestta_task_id:
+            ja = conn.execute(
+                "SELECT id FROM cobrancas_dominio WHERE "
+                "gestta_task_id = ? AND status = 'pendente'",
+                (gestta_task_id,),
+            ).fetchone()
+            if ja:
+                return int(dict(ja)["id"])
+
+        cur = conn.execute(
+            """INSERT INTO cobrancas_dominio
+                 (empresa_id, protocolo_id, gestta_task_id,
+                  tipo_servico, cliente_nome, cliente_cnpj,
+                  valor_sugerido, descricao, responsavel)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (empresa_id, protocolo_id, gestta_task_id,
+             tipo_servico, cliente_nome, cliente_cnpj,
+             valor, descricao, responsavel),
+        )
+        return cur.lastrowid
+
+
+def listar_cobrancas_pendentes(
+    *, status: str | None = "pendente",
+    responsavel: str | None = None,
+) -> list[dict]:
+    sql = "SELECT * FROM cobrancas_dominio WHERE 1=1"
+    params: list = []
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if responsavel:
+        sql += " AND responsavel = ?"
+        params.append(responsavel)
+    sql += " ORDER BY criado_em DESC"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+
+def marcar_cobranca_lancada(
+    cobranca_id: int,
+    *, valor_lancado: float | None = None,
+    lancado_por: str | None = None,
+    observacao: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE cobrancas_dominio SET
+                 status = 'lancada',
+                 valor_lancado = COALESCE(?, valor_sugerido),
+                 lancado_em = datetime('now', 'localtime'),
+                 lancado_por = ?,
+                 observacao = COALESCE(?, observacao)
+               WHERE id = ?""",
+            (valor_lancado, lancado_por, observacao, cobranca_id),
+        )
+
+
+def cancelar_cobranca(cobranca_id: int, motivo: str | None = None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE cobrancas_dominio SET status = 'cancelada', "
+            "observacao = COALESCE(?, observacao) WHERE id = ?",
+            (motivo, cobranca_id),
+        )
+
+
+def contar_cobrancas_pendentes() -> int:
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT COUNT(*) AS c FROM cobrancas_dominio "
+            "WHERE status = 'pendente'"
+        ).fetchone()
+        return int(dict(r)["c"]) if r else 0
+
+
+def total_pendente_cobranca() -> float:
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT COALESCE(SUM(valor_sugerido), 0) AS total "
+            "FROM cobrancas_dominio WHERE status = 'pendente'"
+        ).fetchone()
+        return float(dict(r)["total"]) if r else 0.0
 
 
 def obter_jwt_gestta_efetivo(email: str | None = None) -> str:

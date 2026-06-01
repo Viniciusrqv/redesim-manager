@@ -27,7 +27,9 @@ from database import (init_db, processos_atrasados,
                       listar_todos_protocolos, get_conn,
                       STATUS_PROTOCOLO_OK, STATUS_PROTOCOLO_PROBLEMA,
                       pendencias_em_alerta,
-                      cnaes_pendentes_verificacao)
+                      cnaes_pendentes_verificacao,
+                      listar_cobrancas_pendentes,
+                      total_pendente_cobranca)
 from utils.notifier import enviar_alerta
 
 logging.basicConfig(
@@ -320,6 +322,55 @@ def checar_pendencias_gerais():
                 f"• <b>{p['razao_social']}</b> — {p['assunto']} "
                 f"(<i>{p['prioridade']}</i>) — {p['dias_parado']}d sem mexer"
             )
+    enviar_alerta("\n".join(linhas))
+
+
+def checar_cobrancas_dominio():
+    """Avisa por Telegram as cobranças pendentes de lançar no DOMÍNIO.
+    Roda junto com os outros lembretes 2x ao dia. Não bombardeia: só
+    manda se tiver alguma pendente.
+    """
+    log.info("Verificando cobranças DOMÍNIO pendentes...")
+    try:
+        pends = listar_cobrancas_pendentes(status="pendente")
+    except Exception as exc:
+        log.warning("Falha ao listar cobranças: %s", exc)
+        return
+    if not pends:
+        log.info("Sem cobranças pendentes ✅")
+        return
+
+    try:
+        total = total_pendente_cobranca()
+    except Exception:
+        total = sum(float(p.get("valor_sugerido") or 0) for p in pends)
+
+    linhas = [
+        f"💰 <b>{len(pends)} cobrança(s) pendente(s) no DOMÍNIO</b>\n",
+        f"💵 Total a lançar: <b>R$ {total:,.2f}</b>".replace(
+            ",","X").replace(".",",").replace("X","."),
+        "",
+    ]
+    tipo_label = {
+        "LICENCA_REDESIM": "📋 Licença REDESIM",
+        "VISA":            "🏥 Vigilância Sanitária",
+        "AVCB":            "🚒 AVCB Bombeiros",
+        "OUTRO":           "📌 Outro",
+    }
+    # Top 10 mais antigas
+    for p in pends[:10]:
+        valor = f"R$ {(p.get('valor_sugerido') or 0):.2f}".replace(".",",")
+        criado = (p.get("criado_em") or "")[:10]
+        lbl = tipo_label.get(p.get("tipo_servico"), p.get("tipo_servico", "?"))
+        linhas.append(
+            f"• <b>{p.get('cliente_nome','—')}</b> — {lbl} — "
+            f"{valor} — desde {criado}"
+        )
+    if len(pends) > 10:
+        linhas.append(f"... e mais {len(pends) - 10} cobrança(s).")
+    linhas.append("")
+    linhas.append("👉 Entre no app e marque como 'Lancei' depois de "
+                  "registrar no DOMÍNIO.")
     enviar_alerta("\n".join(linhas))
 
 
