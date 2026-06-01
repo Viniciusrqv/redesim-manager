@@ -766,6 +766,9 @@ def _migrar(conn: sqlite3.Connection) -> None:
     # protocolos_redesim.substituido_por_id (rastreio de substituições)
     try:
         cols_pr = {r["name"] for r in conn.execute("PRAGMA table_info(protocolos_redesim);")}
+    if "data_vencimento" not in cols_pr:
+        conn.execute("ALTER TABLE protocolos_redesim ADD COLUMN data_vencimento TEXT;")
+        log.info("Migration: data_vencimento adicionado a protocolos_redesim")
     except sqlite3.OperationalError:
         cols_pr = set()
     if cols_pr and "substituido_por_id" not in cols_pr:
