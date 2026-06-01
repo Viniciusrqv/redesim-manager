@@ -5100,6 +5100,76 @@ def _renderizar_form_distrato(tarefa: dict):
             st.rerun()
 
 
+def _sync_gestta_completo():
+    """Sincroniza TODAS as tarefas do GESTTA do usuário logado.
+
+    Usa o JWT pessoal (obter_jwt_gestta_efetivo). Busca tarefas em
+    todos os tipos e todos os status (incluindo IMPEDIMENTO), filtrando
+    pelo OWNER = nome do usuário se possível. Persiste tudo via
+    upsert_tarefas_gestta_api e atualiza o `tipo` automaticamente.
+
+    Retorna dict com {inseridas, atualizadas, total, owner_filter}.
+    """
+    from database import obter_jwt_gestta_efetivo, upsert_tarefas_gestta_api
+    from auth import usuario_atual as _u_at
+    from utils.gestta_api import GesttaClient
+
+    _u = _u_at() or {}
+    jwt = obter_jwt_gestta_efetivo(_u.get("email"))
+    if not jwt:
+        return {
+            "erro": (
+                "Sem JWT GESTTA configurado. Vá em ⚙️ Configurações "
+                "→ Meu GESTTA pra cadastrar o seu token pessoal."
+            )
+        }
+
+    cli = GesttaClient(jwt)
+    info = cli.info_token()
+    nome_usuario = (info or {}).get("user_name") or "—"
+
+    # Busca TUDO (sem filtro de status — pega impedimento, em andamento,
+    # concluída, atrasada, etc.)
+    todas = []
+    try:
+        for t in cli.iter_tarefas(limit=100):
+            todas.append(t)
+    except Exception as exc:
+        return {"erro": f"Falha ao buscar tarefas: {exc}"}
+
+    # Filtra pelo owner == nome do usuário do JWT
+    minhas = [
+        t for t in todas
+        if (((t.get("owner") or {}).get("name") or "").strip().upper()
+            == nome_usuario.strip().upper())
+    ]
+
+    if not minhas:
+        return {
+            "total_geral": len(todas),
+            "minhas": 0,
+            "owner_filter": nome_usuario,
+            "aviso": (
+                f"Nenhuma tarefa encontrada com owner = '{nome_usuario}'. "
+                f"Total geral retornado pela API: {len(todas)}. "
+                f"Verifique se o nome bate exatamente com o cadastrado no "
+                f"GESTTA — pode ser que apareça em formato diferente "
+                f"(ex.: 'VINICIUS RAFAEL' vs 'Vinicius Rafael Queiroga')."
+            ),
+        }
+
+    # Persiste no banco local
+    resultado = upsert_tarefas_gestta_api(minhas)
+    return {
+        "total_geral": len(todas),
+        "minhas": len(minhas),
+        "owner_filter": nome_usuario,
+        "inseridas": resultado.get("inseridas", 0),
+        "atualizadas": resultado.get("atualizadas", 0),
+        "matched_empresa": resultado.get("matched_empresa", 0),
+    }
+
+
 def _aba_regularizacao():
     """Visão focada em Licença de Funcionamento + Alvará Sanitário +
     Bombeiros. Mostra atrasadas no topo, agrupadas por tipo.
@@ -5109,6 +5179,45 @@ def _aba_regularizacao():
         "Sanitário, Bombeiros) — independente do responsável. "
         "Atrasadas aparecem primeiro pra você atacar."
     )
+
+    # Botão de sincronização completa com GESTTA
+    sb1, sb2 = st.columns([1, 3])
+    with sb1:
+        if st.button(
+            "🔄 Sincronizar TUDO do GESTTA",
+            key="btn_sync_gestta_full",
+            type="primary",
+            use_container_width=True,
+            help=("Puxa via API GESTTA todas as suas tarefas "
+                  "(abertas, em impedimento, atrasadas, em dia) e "
+                  "atualiza o app. Usa o seu JWT pessoal."),
+        ):
+            with st.spinner("Sincronizando com o GESTTA…"):
+                res = _sync_gestta_completo()
+            if res.get("erro"):
+                st.error(res["erro"])
+            elif res.get("aviso"):
+                st.warning(res["aviso"])
+            else:
+                st.success(
+                    f"✅ Sincronizado! Owner filtrado: "
+                    f"**{res['owner_filter']}**. "
+                    f"{res['minhas']} tarefa(s) suas "
+                    f"({res['inseridas']} novas, {res['atualizadas']} "
+                    f"atualizadas, {res['matched_empresa']} já vinculadas "
+                    f"a empresas). Total geral do escritório: "
+                    f"{res['total_geral']}."
+                )
+                import time as _t
+                _t.sleep(1.5)
+                st.rerun()
+    with sb2:
+        st.caption(
+            "💡 Clica em **Sincronizar** quando tiver criado/atualizado "
+            "tarefas direto no GESTTA — assim o app puxa em tempo real. "
+            "O filtro pega só as que estão com você como responsável "
+            "(pelo nome do seu JWT pessoal)."
+        )
 
     # Reclassifica tarefas antigas sem `tipo` (uma vez por carregamento)
     if not st.session_state.get("_tipos_reclassificados"):
