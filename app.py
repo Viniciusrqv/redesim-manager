@@ -1091,186 +1091,231 @@ def _bloco_pendencias_dashboard():
 
 
 def _bloco_protocolos_redesim_dashboard():
-    """Bloco dos protocolos REDESIM em andamento, com filtros."""
+    """Pipeline Viabilidade → Licenciamento com botões de ação direta."""
+    from datetime import datetime as _dt
     todos = listar_todos_protocolos()
-    em_andamento = [
-        p for p in todos
-        if p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
-        and not p.get("substituido_por_id")
-    ]
-    if not em_andamento:
+
+    via_andamento = [p for p in todos
+                     if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
+                     and p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
+                     and not p.get("substituido_por_id")]
+    via_aprovadas = [p for p in todos
+                     if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
+                     and p["status"] == "Aprovada"
+                     and not p.get("substituido_por_id")]
+    lic_andamento = [p for p in todos
+                     if p["tipo"] == TIPO_PROTOCOLO_LICENCIAMENTO
+                     and p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
+                     and not p.get("substituido_por_id")]
+
+    todos_ativos = via_andamento + via_aprovadas + lic_andamento
+    if not todos_ativos:
         return
 
-    from datetime import datetime as _dt
     hoje = _dt.now()
-    emps = {e["id"]: e["razao_social"] for e in _cache_empresas()}
 
-    # enriquece com cor + dias + razao_social
-    enriquecidos = []
-    for p in em_andamento:
+    def _dias(p):
         ds = p.get("data_solicitacao")
-        dias = None
-        if ds:
-            try:
-                dias = (hoje - _dt.strptime(ds, "%Y-%m-%d")).days
-            except ValueError:
-                pass
-        if dias is None:
-            cor = "🟢"
-        elif dias >= DIAS_VERMELHO:
-            cor = "🔴"
-        elif dias >= DIAS_AMARELO:
-            cor = "🟡"
-        else:
-            cor = "🟢"
-        enriquecidos.append({
-            **p,
-            "_cor": cor,
-            "_dias": dias,
-            "_razao": emps.get(p["empresa_id"], "?"),
-        })
+        if not ds:
+            return 0
+        try:
+            return (hoje - _dt.strptime(ds, "%Y-%m-%d")).days
+        except Exception:
+            return 0
+
+    def _cor(dias):
+        if dias >= DIAS_VERMELHO:
+            return "🔴"
+        if dias >= DIAS_AMARELO:
+            return "🟡"
+        return "🟢"
 
     with st.container(border=True):
         st.markdown(
             "<div class='bloco-header'>📜 Protocolos REDESIM em andamento</div>",
             unsafe_allow_html=True,
         )
-        _r = sum(1 for p in enriquecidos if p["_cor"] == "🔴")
-        _y = sum(1 for p in enriquecidos if p["_cor"] == "🟡")
-        _g = sum(1 for p in enriquecidos if p["_cor"] == "🟢")
+        all_dias = [_dias(p) for p in todos_ativos]
+        _r = sum(1 for d in all_dias if d >= DIAS_VERMELHO)
+        _y = sum(1 for d in all_dias if DIAS_AMARELO <= d < DIAS_VERMELHO)
+        _g = sum(1 for d in all_dias if d < DIAS_AMARELO)
         st.markdown(_health_bar_html(_r, _y, _g), unsafe_allow_html=True)
 
-        with st.expander("🔎 Filtros", expanded=False):
-            f1, f2, f3, f4 = st.columns(4)
-            with f1:
-                f_alerta = st.multiselect(
-                    "Alerta",
-                    ["🔴", "🟡", "🟢"],
-                    default=["🔴", "🟡", "🟢"],
-                    key="prot_dash_alerta",
-                )
-            with f2:
-                tipos_disp = sorted({p["tipo"] for p in enriquecidos})
-                f_tipo = st.multiselect(
-                    "Tipo",
-                    tipos_disp,
-                    default=tipos_disp,
-                    key="prot_dash_tipo",
-                )
-            with f3:
-                status_disp = sorted({p["status"] for p in enriquecidos})
-                f_stat = st.multiselect(
-                    "Status",
-                    status_disp,
-                    default=status_disp,
-                    key="prot_dash_stat",
-                )
-            with f4:
-                emps_disp = sorted({p["_razao"] for p in enriquecidos})
-                f_emp = st.selectbox(
-                    "Empresa",
-                    ["Todas"] + emps_disp,
-                    key="prot_dash_emp",
-                )
+        col_via, col_arrow, col_lic = st.columns([5, 1, 5])
 
-        filtrados = [
-            p for p in enriquecidos
-            if p["_cor"] in f_alerta
-            and p["tipo"] in f_tipo
-            and p["status"] in f_stat
-            and (f_emp == "Todas" or p["_razao"] == f_emp)
-        ]
-        ordem = {"🔴": 0, "🟡": 1, "🟢": 2}
-        filtrados.sort(key=lambda r: (ordem.get(r["_cor"], 9),
-                                       -(r["_dias"] or 0)))
-
-        cm1, cm2, cm3, cm4 = st.columns(4)
-        cm1.metric("Filtrados", len(filtrados))
-        cm2.metric("🔴 Estourado", sum(1 for r in filtrados if r["_cor"] == "🔴"))
-        cm3.metric("🟡 Em alerta", sum(1 for r in filtrados if r["_cor"] == "🟡"))
-        cm4.metric("🟢 OK", sum(1 for r in filtrados if r["_cor"] == "🟢"))
-
-        if filtrados:
-            linhas = [{
-                "": p["_cor"],
-                "Empresa": p["_razao"],
-                "Protocolo": p["numero_protocolo"],
-                "Tipo": p["tipo"],
-                "Status": p["status"],
-                "Solicitado em": p.get("data_solicitacao") or "—",
-                "Dias parado": f"{p['_dias']}d" if p["_dias"] is not None else "—",
-            } for p in filtrados]
-            sel = st.dataframe(
-                pd.DataFrame(linhas), use_container_width=True, hide_index=True,
-                on_select="rerun", selection_mode="single-row",
-                key="prot_dash_df",
+        with col_via:
+            st.markdown("#### 📋 Etapa 1 — Viabilidade")
+            st.caption(
+                f"{len(via_andamento)} em análise · "
+                f"{len(via_aprovadas)} aprovada(s) aguardando"
             )
-            if sel and getattr(sel, "selection", None) and sel.selection.rows:
-                idx = sel.selection.rows[0]
-                p_sel = filtrados[idx]
-                # status válidos por tipo
-                stats_validos = (STATUS_PROTOCOLO_VIABILIDADE
-                                 if p_sel["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
-                                 else STATUS_PROTOCOLO_LICENCIAMENTO)
+            for p in via_andamento + via_aprovadas:
+                dias = _dias(p)
+                cor = _cor(dias)
+                razao = p.get("razao_social", "?")
                 with st.container(border=True):
-                    st.markdown(
-                        f"**Selecionado:** {p_sel['_cor']} "
-                        f"`{p_sel['numero_protocolo']}` "
-                        f"({p_sel['tipo']}) — {p_sel['_razao']}"
-                    )
-                    a1, a2, a3 = st.columns(3)
-                    with a1:
-                        novo = st.selectbox(
-                            "Atualizar status",
-                            stats_validos,
-                            index=stats_validos.index(p_sel["status"])
-                                  if p_sel["status"] in stats_validos else 0,
-                            key=f"prot_dash_st_{p_sel['id']}",
+                    ca, cb = st.columns([3, 1])
+                    with ca:
+                        st.markdown(f"{cor} **{razao}**")
+                        st.caption(
+                            f"`{p['numero_protocolo']}` · {p['status']} · {dias}d"
                         )
-                    with a2:
-                        obs = st.text_input(
-                            "Observação (obrigatória se for status-problema)",
-                            key=f"prot_dash_obs_{p_sel['id']}",
-                            placeholder="ex.: indeferida por divergência cadastral",
-                        )
-                    with a3:
+                    with cb:
+                        st.caption(p.get("data_solicitacao") or "—")
+
+                    if p["status"] == "Aprovada":
+                        st.success("✅ Viabilidade deferida — pronto para Licenciamento")
                         if st.button(
-                            "💾 Aplicar",
-                            key=f"prot_dash_save_{p_sel['id']}",
-                            use_container_width=True, type="primary",
+                            "▶️ Iniciar Licenciamento",
+                            key=f"ini_lic_{p['id']}",
+                            use_container_width=True,
+                            type="primary",
                         ):
-                            if novo in STATUS_PROTOCOLO_PROBLEMA and not obs.strip():
-                                st.warning(
-                                    "Status-problema (Indeferida/Cancelada/"
-                                    "Inativa) exige observação."
+                            novo_id = criar_protocolo_redesim(
+                                empresa_id=p["empresa_id"],
+                                tipo=TIPO_PROTOCOLO_LICENCIAMENTO,
+                                numero_protocolo=p["numero_protocolo"],
+                                data_solicitacao=p.get("data_solicitacao"),
+                                status="Em análise",
+                                observacoes=(
+                                    "Licenciamento iniciado após viabilidade aprovada.\n"
+                                    "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                ),
+                            )
+                            st.toast(f"Licenciamento registrado (ID {novo_id}).")
+                            _invalidar_cache_db()
+                            import time as _t
+                            _t.sleep(0.8)
+                            st.rerun()
+                    else:
+                        b1, b2, b3 = st.columns(3)
+                        with b1:
+                            if st.button(
+                                "✅ Deferida",
+                                key=f"def_{p['id']}",
+                                use_container_width=True,
+                                type="primary",
+                            ):
+                                _, info_g = atualizar_status_protocolo_com_gestta(
+                                    p["id"], "Aprovada",
+                                    observacoes=(
+                                        "Viabilidade deferida pela Prefeitura.\n"
+                                        "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                    ),
                                 )
-                            else:
-                                _, info_g = \
-                                    atualizar_status_protocolo_com_gestta(
-                                        p_sel["id"], novo,
-                                        observacoes=obs or None,
-                                    )
-                                st.toast(f"Status atualizado para {novo}.")
-                                _mostrar_feedback_gestta(info_g, novo)
-                                import time as _time
-                                _time.sleep(1.0)
+                                st.toast("Viabilidade aprovada!")
+                                _mostrar_feedback_gestta(info_g, "Aprovada")
+                                _invalidar_cache_db()
+                                import time as _t
+                                _t.sleep(0.8)
+                                st.rerun()
+                        with b2:
+                            if st.button(
+                                "❌ Indeferida",
+                                key=f"ind_{p['id']}",
+                                use_container_width=True,
+                            ):
+                                _, info_g = atualizar_status_protocolo_com_gestta(
+                                    p["id"], "Indeferida",
+                                    observacoes=(
+                                        "Viabilidade indeferida.\n"
+                                        "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                    ),
+                                )
+                                st.toast("Indeferida.")
+                                _mostrar_feedback_gestta(info_g, "Indeferida")
+                                _invalidar_cache_db()
+                                import time as _t
+                                _t.sleep(0.8)
+                                st.rerun()
+                        with b3:
+                            if st.button(
+                                "🚫 Cancelar",
+                                key=f"can_{p['id']}",
+                                use_container_width=True,
+                            ):
+                                _, info_g = atualizar_status_protocolo_com_gestta(
+                                    p["id"], "Cancelada",
+                                    observacoes=(
+                                        "Protocolo cancelado.\n"
+                                        "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                    ),
+                                )
+                                st.toast("Cancelado.")
+                                _mostrar_feedback_gestta(info_g, "Cancelada")
+                                _invalidar_cache_db()
+                                import time as _t
+                                _t.sleep(0.8)
                                 st.rerun()
 
-                    if st.button(
-                        f"📂 Abrir timeline de {p_sel['_razao']} →",
-                        key=f"prot_dash_navigate_{p_sel['id']}",
-                        use_container_width=True,
-                    ):
-                        _navegar_para(
-                            "🏢 Empresas / REDESIM",
-                            focus_empresa_id=p_sel["empresa_id"],
+        with col_arrow:
+            st.markdown(
+                "<div style='text-align:center;font-size:2rem;padding-top:3rem;'>→</div>",
+                unsafe_allow_html=True,
+            )
+
+        with col_lic:
+            st.markdown("#### 📄 Etapa 2 — Licenciamento (CLI)")
+            st.caption(f"{len(lic_andamento)} em andamento")
+            if not lic_andamento:
+                st.info("Nenhum licenciamento em andamento ainda.")
+            for p in lic_andamento:
+                dias = _dias(p)
+                cor = _cor(dias)
+                razao = p.get("razao_social", "?")
+                with st.container(border=True):
+                    ca, cb = st.columns([3, 1])
+                    with ca:
+                        st.markdown(f"{cor} **{razao}**")
+                        st.caption(
+                            f"`{p['numero_protocolo']}` · {p['status']} · {dias}d"
                         )
-        else:
-            st.info("Nenhum protocolo com esses filtros.")
+                    with cb:
+                        st.caption(p.get("data_solicitacao") or "—")
+                    b1, b2 = st.columns(2)
+                    with b1:
+                        if st.button(
+                            "✅ CLI Emitido",
+                            key=f"cli_{p['id']}",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            _, info_g = atualizar_status_protocolo_com_gestta(
+                                p["id"], "Concluída",
+                                observacoes=(
+                                    "CLI emitido. Licença de Funcionamento concluída.\n"
+                                    "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                ),
+                            )
+                            st.toast("CLI emitido! Cobrança DOMÍNIO gerada automaticamente.")
+                            _mostrar_feedback_gestta(info_g, "Concluída")
+                            _invalidar_cache_db()
+                            import time as _t
+                            _t.sleep(0.8)
+                            st.rerun()
+                    with b2:
+                        if st.button(
+                            "❌ Indeferida",
+                            key=f"lic_ind_{p['id']}",
+                            use_container_width=True,
+                        ):
+                            _, info_g = atualizar_status_protocolo_com_gestta(
+                                p["id"], "Indeferida",
+                                observacoes=(
+                                    "Licenciamento indeferido.\n"
+                                    "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                ),
+                            )
+                            st.toast("Indeferido.")
+                            _mostrar_feedback_gestta(info_g, "Indeferida")
+                            _invalidar_cache_db()
+                            import time as _t
+                            _t.sleep(0.8)
+                            st.rerun()
+
         st.caption(
-            f"🔴 ≥ {DIAS_VERMELHO}d (prazo estourado) · 🟡 ≥ {DIAS_AMARELO}d · 🟢 ok. "
-            "**Clique na linha** para mudar status rapidinho. Histórico "
-            "completo em **🏢 Empresas / REDESIM**."
+            f"🔴 ≥ {DIAS_VERMELHO}d · 🟡 ≥ {DIAS_AMARELO}d · 🟢 ok. "
+            "Histórico completo em **🏢 Empresas / REDESIM**."
         )
 
 
@@ -1699,224 +1744,6 @@ def pagina_dashboard():
     _bloco_documentos_dashboard()
     _bloco_avcb_dashboard()
     _bloco_gestta_dashboard()
-
-    # === Processos REDESIM (sistema antigo + filtros existentes) ===
-    processos = _cache_processos()
-    if not processos:
-        st.info(
-            "Nenhum processo REDESIM cadastrado ainda. Use **Novo Processo** "
-            "no menu."
-        )
-        return
-
-    st.subheader("🔄 Processos REDESIM (com filtros)")
-    df = pd.DataFrame(processos)
-    df["dias_parado"] = df["dias_parado"].astype(int)
-
-    # =====================================================
-    # FILTROS
-    # =====================================================
-    STATUS_FINALIZADOS = {"Deferido", "Indeferido", "Arquivado"}
-
-    with st.expander("🔎 **Filtros**", expanded=True):
-        fc1, fc2, fc3 = st.columns([2, 2, 2])
-
-        # Checkbox "Apenas em andamento" — default ON, como Eduardo pediu
-        apenas_andamento = fc1.checkbox(
-            "Apenas em andamento",
-            value=True,
-            help="Esconde processos Deferidos / Indeferidos / Arquivados",
-        )
-
-        # Multiselect de status — se "apenas em andamento" tiver marcado,
-        # filtra os status disponíveis
-        status_disponiveis = [
-            s for s in STATUS_VALIDOS
-            if (not apenas_andamento or s not in STATUS_FINALIZADOS)
-        ]
-        status_sel = fc2.multiselect(
-            "Status",
-            status_disponiveis,
-            default=status_disponiveis,
-            help="Deixe vazio para ver todos",
-        )
-
-        # Risco — mostra sempre as 3 categorias possíveis
-        riscos = ["Baixo", "Médio", "Alto"]
-        risco_sel = fc3.multiselect(
-            "Risco consolidado",
-            riscos,
-            default=riscos,
-            help="Deixe vazio para ver todos, inclusive sem classificação",
-        )
-
-        fc4, fc5, fc6 = st.columns([2, 2, 2])
-
-        # Empresa
-        empresas_opts = ["Todas"] + sorted(df["razao_social"].dropna().unique().tolist())
-        empresa_sel = fc4.selectbox("Empresa", empresas_opts)
-
-        # Slider dias parados
-        max_dias = int(df["dias_parado"].max()) if len(df) else 0
-        dias_range = fc5.slider(
-            "Faixa de dias parados",
-            min_value=0,
-            max_value=max(max_dias, 1),
-            value=(0, max(max_dias, 1)),
-        )
-
-        # Busca livre
-        termo = fc6.text_input(
-            "🔍 Buscar (razão social, CNPJ, protocolo)",
-            placeholder="Ex: Silva, 12.345, REDE2024…",
-        )
-
-    # Aplica os filtros
-    dff = df.copy()
-    if apenas_andamento:
-        dff = dff[~dff["status"].isin(STATUS_FINALIZADOS)]
-    if status_sel:
-        dff = dff[dff["status"].isin(status_sel)]
-    if risco_sel:
-        dff = dff[dff["risco"].isin(risco_sel) | dff["risco"].isna()]
-    if empresa_sel != "Todas":
-        dff = dff[dff["razao_social"] == empresa_sel]
-    dff = dff[(dff["dias_parado"] >= dias_range[0])
-             & (dff["dias_parado"] <= dias_range[1])]
-    if termo:
-        t = termo.strip().lower()
-        def _match(row):
-            campos = [str(row.get(k) or "") for k in
-                     ("razao_social", "cnpj", "protocolo")]
-            return any(t in c.lower() for c in campos)
-        dff = dff[dff.apply(_match, axis=1)]
-
-    st.caption(f"Mostrando **{len(dff)}** de **{len(df)}** processos.")
-
-    # Métricas gerais — calculadas sobre o DF filtrado
-    ativos_mask = ~dff["status"].isin(STATUS_FINALIZADOS)
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total filtrado", len(dff))
-    col2.metric("Em andamento", int(ativos_mask.sum()))
-    col3.metric("Deferidos", int((dff["status"] == "Deferido").sum()))
-    col4.metric(
-        f"🟡 Alerta (≥ {DIAS_AMARELO}d)",
-        int((ativos_mask
-             & (dff["dias_parado"] >= DIAS_AMARELO)
-             & (dff["dias_parado"] < DIAS_VERMELHO)).sum()),
-    )
-    col5.metric(
-        f"🔴 Estourado (≥ {DIAS_VERMELHO}d)",
-        int((ativos_mask & (dff["dias_parado"] >= DIAS_VERMELHO)).sum()),
-    )
-
-    if dff.empty:
-        st.warning("Nenhum processo corresponde aos filtros.")
-        return
-
-    # Tabela com destaque amarelo/vermelho/verde conforme dias parados
-    st.subheader("Tabela de processos")
-    st.caption(
-        "🟢 Em dia (< {0}d) · 🟡 Alerta (≥ {0}d e < {1}d) · "
-        "🔴 Estourado (≥ {1}d) · ⚪ Finalizado".format(DIAS_AMARELO, DIAS_VERMELHO)
-    )
-
-    # Acrescenta coluna visual com a bolinha
-    def _bolinha(row):
-        if row["status"] in STATUS_FINALIZADOS:
-            return "⚪"
-        d = int(row["dias_parado"])
-        if d >= DIAS_VERMELHO:
-            return "🔴"
-        if d >= DIAS_AMARELO:
-            return "🟡"
-        return "🟢"
-
-    dff = dff.copy()
-    dff["situacao"] = dff.apply(_bolinha, axis=1)
-
-    def estilo_linha(row):
-        # Após o rename abaixo, as colunas usadas aqui são "status" e
-        # "Dias parados" (não "dias_parado"). Cuidado ao editar.
-        if row["status"] in STATUS_FINALIZADOS:
-            return [""] * len(row)
-        if row["Dias parados"] >= DIAS_VERMELHO:
-            # Vermelho — prazo REDESIM estourado
-            return ["background-color: #ffcccc; color: #8B0000;"] * len(row)
-        if row["Dias parados"] >= DIAS_AMARELO:
-            # Amarelo — alerta preventivo
-            return ["background-color: #fff3cd; color: #7a5c00;"] * len(row)
-        # Verde claro — em dia
-        return ["background-color: #e8f5e9; color: #1b5e20;"] * len(row)
-
-    cols_view = ["situacao", "id", "razao_social", "cnpj", "protocolo", "tipo",
-                 "status", "risco", "exige_sanitaria",
-                 "dias_parado", "ultima_movimentacao"]
-    # 'canal_redesim' é opcional — só mostra se existir na base
-    if "canal_redesim" in dff.columns:
-        cols_view.insert(6, "canal_redesim")
-    df_view = dff[cols_view].rename(columns={
-        "situacao": "Situação",
-        "razao_social": "Empresa",
-        "exige_sanitaria": "Sanitária?",
-        "dias_parado": "Dias parados",
-        "ultima_movimentacao": "Última mov.",
-        "canal_redesim": "Canal REDESIM",
-    })
-    st.dataframe(df_view.style.apply(estilo_linha, axis=1),
-                 use_container_width=True, hide_index=True)
-
-    # Kanban por status
-    st.subheader("Kanban")
-    status_em_uso = [s for s in STATUS_VALIDOS if s in dff["status"].unique()]
-    cols = st.columns(max(len(status_em_uso), 1))
-    for col, status in zip(cols, status_em_uso):
-        with col:
-            st.markdown(f"### {status}")
-            subset = dff[dff["status"] == status]
-            for _, row in subset.iterrows():
-                if row["status"] in ("Deferido", "Indeferido", "Arquivado"):
-                    icon = "🟢"
-                elif row["dias_parado"] >= DIAS_VERMELHO:
-                    icon = "🔴"
-                elif row["dias_parado"] >= DIAS_AMARELO:
-                    icon = "🟡"
-                else:
-                    icon = "🟢"
-                with st.container(border=True):
-                    st.markdown(f"{icon} **{row['razao_social']}**")
-                    st.caption(
-                        f"ID {row['id']} · {row['dias_parado']}d parado · "
-                        f"Risco: {row['risco'] or '—'}"
-                    )
-                    novo = st.selectbox(
-                        "Mover para…",
-                        STATUS_VALIDOS,
-                        index=STATUS_VALIDOS.index(row["status"]),
-                        key=f"mov_{row['id']}",
-                    )
-                    if novo != row["status"] and st.button(
-                            "Atualizar", key=f"btn_{row['id']}"):
-                        res = atualizar_status(
-                            row["id"], novo,
-                            comentario="Alterado pelo painel",
-                            usuario="app",
-                        )
-                        if isinstance(res, dict):
-                            fech = res.get("protocolos_fechados", 0)
-                            if fech > 0:
-                                st.success(
-                                    f"Status atualizado! E **{fech} "
-                                    f"protocolo(s) REDESIM** da mesma "
-                                    f"empresa foi(ram) fechado(s) "
-                                    f"automaticamente — assim o "
-                                    f"Telegram para de mandar alerta."
-                                )
-                            else:
-                                st.success("Status atualizado!")
-                        else:
-                            st.success("Status atualizado!")
-                        st.rerun()
 
 
 # ---------------------------------------------------------
