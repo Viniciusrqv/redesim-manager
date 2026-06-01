@@ -362,12 +362,34 @@ def atualizar_status_protocolo_com_gestta(
         except Exception as exc:
             info = {"ok": False, "mensagem": str(exc)}
 
-        # GANCHO COBRANÇA DOMÍNIO: se virou status terminal positivo,
-        # cria cobrança automaticamente
-        if novo_status in STATUS_PROTOCOLO_OK:
+        # GANCHO COBRANÇA DOMÍNIO: dispara SÓ no fim da jornada — quando
+        # o CLI é emitido (Licenciamento Concluído), NÃO na viabilidade.
+        # Regra do Eduardo: "só cobro depois que sair o CLI / documento
+        # final, tanto vigilância sanitária quanto licença de
+        # funcionamento."
+        tipo_prot = (atualizado.get("tipo") or "").upper()
+        # Considera "fim de jornada" se:
+        #   - Status virou Concluída (CLI emitido — licenciamento)
+        #   - Tipo é "Licenciamento" OU tarefa GESTTA cita VISA/Sanit
+        # Status "Aprovada" sozinho (viabilidade) NÃO dispara cobrança.
+        is_cli_emitido = (
+            novo_status == "Concluída"
+            and ("LICENCIAMENTO" in tipo_prot or "LICENÇA" in tipo_prot
+                 or "LICENCA" in tipo_prot)
+        )
+        # Pra VISA, qualquer status "Aprovada" ou "Concluída" no protocolo
+        # de licenciamento sanitário também dispara
+        tarefa_gestta = info.get("tarefa") or {}
+        nome_tarefa = (tarefa_gestta.get("tarefa_nome") or "").upper()
+        is_visa_emitida = (
+            novo_status in ("Aprovada", "Concluída")
+            and ("SANIT" in nome_tarefa or "VISA" in nome_tarefa
+                 or "VIGILANCIA" in nome_tarefa)
+        )
+
+        if is_cli_emitido or is_visa_emitida:
             try:
                 garantir_valores_cobranca_padrao()
-                tarefa_gestta = info.get("tarefa") or {}
                 tipo_cob = _classificar_tipo_cobranca(
                     atualizado,
                     tarefa_gestta.get("tarefa_nome"),
@@ -381,9 +403,9 @@ def atualizar_status_protocolo_com_gestta(
                     gestta_task_id=tarefa_gestta.get("gestta_id"),
                     tipo_servico=tipo_cob,
                     descricao=(
-                        f"Protocolo {atualizado.get('numero_protocolo', '?')} "
-                        f"({atualizado.get('tipo', '?')}) — "
-                        f"{novo_status}"
+                        f"CLI emitido — Protocolo "
+                        f"{atualizado.get('numero_protocolo', '?')} "
+                        f"({atualizado.get('tipo', '?')})"
                     ),
                     responsavel=(
                         _u.get("nome") or _u.get("email") or
@@ -394,6 +416,12 @@ def atualizar_status_protocolo_com_gestta(
                 info["cobranca_tipo"] = tipo_cob
             except Exception as exc:
                 info["cobranca_erro"] = str(exc)
+        elif novo_status == "Aprovada":
+            # Viabilidade aprovada: NÃO cria cobrança, mas avisa
+            # que o próximo passo é o licenciamento
+            info["proximo_passo"] = (
+                "viabilidade_aprovada_seguir_licenciamento"
+            )
 
     return atualizado, info
 
@@ -414,18 +442,27 @@ def _mostrar_feedback_gestta(info: dict, novo_status: str):
         # Avisa o motivo, mas não bloqueia o fluxo
         pass
 
-    # Feedback de cobrança automática
+    # Feedback de cobrança automática (só quando CLI emitido)
     if info.get("cobranca_criada_id"):
         tipo_cob = info.get("cobranca_tipo", "OUTRO")
         from database import VALORES_COBRANCA_PADRAO
         _, valor_def = VALORES_COBRANCA_PADRAO.get(tipo_cob, ("", 0))
         st.success(
-            f"💰 **COBRANÇA DOMÍNIO criada automaticamente** "
+            f"💰 **COBRANÇA DOMÍNIO criada — CLI emitido** "
             f"(R$ {valor_def:.2f}). Lembrete vai pro seu Telegram. "
             f"Veja em **💰 Cobranças DOMÍNIO** no menu."
         )
     if info.get("cobranca_erro"):
         st.caption(f"⚠️ Falha ao criar cobrança: {info['cobranca_erro']}")
+    # Quando viabilidade aprovada, orientação pro próximo passo
+    if info.get("proximo_passo") == "viabilidade_aprovada_seguir_licenciamento":
+        st.info(
+            "➡️ **Viabilidade aprovada!** Próximo passo: vá no "
+            "Facilita-SP em **Licenciamento**, digite só o CNPJ e ele "
+            "vai reaproveitar este mesmo protocolo. A cobrança DOMÍNIO "
+            "será criada automaticamente apenas quando o CLI for "
+            "emitido."
+        )
     if info.get("mensagem") and not info.get("ok"):
         st.caption(f"ℹ️ GESTTA: {info['mensagem']}")
 
