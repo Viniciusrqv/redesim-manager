@@ -321,6 +321,15 @@ DDL = [
     ALTER TABLE tarefas_gestta ADD COLUMN IF NOT EXISTS tipo TEXT;
     """,
     """
+    ALTER TABLE tarefas_gestta ADD COLUMN IF NOT EXISTS pulado INTEGER DEFAULT 0;
+    """,
+    """
+    ALTER TABLE tarefas_gestta ADD COLUMN IF NOT EXISTS motivo_pulado TEXT;
+    """,
+    """
+    ALTER TABLE tarefas_gestta ADD COLUMN IF NOT EXISTS pulado_em TEXT;
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_gestta_tipo
     ON tarefas_gestta(tipo);
     """,
@@ -2389,12 +2398,17 @@ def classificar_tipo_tarefa_gestta(tarefa_nome: str,
     ]):
         return TIPO_TAREFA_AMBIENTAL
 
-    # ABERTURA
+    # ABERTURA — se tiver "LICENÇA" no nome, vai pro bucket de Licença
+    # (Eduardo: "tem licença escondida dentro de abertura/alteração")
     if "ABERTURA" in t or "CONSTITUI" in t:
+        if "LICENC" in t:
+            return TIPO_TAREFA_LICENCA_FUNC
         return TIPO_TAREFA_ABERTURA
 
-    # ALTERACAO
+    # ALTERACAO — idem: se tem licença no nome, é Licença na prática
     if "ALTERA" in t or "CONTRATO SOCIAL" in t:
+        if "LICENC" in t:
+            return TIPO_TAREFA_LICENCA_FUNC
         return TIPO_TAREFA_ALTERACAO
 
     # BAIXA fiscal
@@ -2746,6 +2760,125 @@ def listar_tarefas_gestta(
     """
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def pular_tarefa_gestta(tarefa_id: int, motivo: str | None = None) -> None:
+    """Marca a tarefa como 'pulada' — não aparece mais na Fila de
+    Renovação. Útil quando a tarefa está errada (cliente já fechou,
+    duplicada, etc.). Pode ser despulada depois.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tarefas_gestta SET pulado = 1, "
+            "motivo_pulado = COALESCE(?, motivo_pulado), "
+            "pulado_em = datetime('now', 'localtime') "
+            "WHERE id = ?",
+            (motivo, tarefa_id),
+        )
+
+
+def despular_tarefa_gestta(tarefa_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tarefas_gestta SET pulado = 0, "
+            "motivo_pulado = NULL, pulado_em = NULL WHERE id = ?",
+            (tarefa_id,),
+        )
+
+
+def fila_renovacao_licencas(
+    *, incluir_pulados: bool = False,
+    incluir_protocolados: bool = False,
+) -> list[dict]:
+    """Devolve a fila de renovações de Licença/VISA — tarefas GESTTA
+    pendentes ordenadas pela mais antiga primeiro.
+
+    Filtros:
+      - apenas pendentes (resolvida=0)
+      - tipo in (LICENCA_FUNCIONAMENTO, ALVARA_SANITARIO)
+      - pulado = 0 (se incluir_pulados=False)
+      - protocolo_id IS NULL (se incluir_protocolados=False)
+    """
+    sql = """
+        SELECT t.*,
+               e.razao_social AS empresa_razao_social,
+               e.cnpj AS empresa_cnpj,
+               e.municipio AS empresa_municipio,
+               e.uf AS empresa_uf,
+               pr.numero_protocolo AS protocolo_numero,
+               pr.status AS protocolo_status
+          FROM tarefas_gestta t
+          LEFT JOIN empresas e ON e.id = t.empresa_id
+          LEFT JOIN protocolos_redesim pr ON pr.id = t.protocolo_id
+         WHERE t.resolvida = 0
+           AND t.tipo IN ('LICENCA_FUNCIONAMENTO', 'ALVARA_SANITARIO')
+    """
+    if not incluir_pulados:
+        sql += " AND COALESCE(t.pulado, 0) = 0"
+    if not incluir_protocolados:
+        sql += " AND t.protocolo_id IS NULL"
+    sql += """
+        ORDER BY CASE
+                   WHEN t.tipo = 'ALVARA_SANITARIO' THEN 0
+                   ELSE 1
+                 END,
+                 COALESCE(t.due_date, '9999-12-31') ASC,
+                 t.cliente_nome
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def iniciar_protocolo_da_tarefa(
+    *, tarefa_id: int, numero_protocolo: str,
+    tipo_protocolo: str = "Viabilidade",
+    status_inicial: str = "Em análise",
+    data_solicitacao: str | None = None,
+    observacoes: str | None = None,
+    responsavel: str | None = None,
+) -> int:
+    """Cria um protocolo REDESIM a partir de uma tarefa GESTTA, e
+    vincula automaticamente os dois pelo `tarefas_gestta.protocolo_id`.
+
+    Retorna o ID do protocolo criado.
+    """
+    from datetime import date as _date
+    if not data_solicitacao:
+        data_solicitacao = _date.today().isoformat()
+
+    with get_conn() as conn:
+        # Pega dados da tarefa
+        r = conn.execute(
+            "SELECT * FROM tarefas_gestta WHERE id = ?", (tarefa_id,),
+        ).fetchone()
+        if not r:
+            raise ValueError(f"Tarefa GESTTA {tarefa_id} não encontrada.")
+        tarefa = dict(r)
+        emp_id = tarefa.get("empresa_id")
+        if not emp_id:
+            raise ValueError(
+                "Tarefa não está vinculada a uma empresa cadastrada. "
+                "Vincule primeiro pelo botão na lista de Tarefas GESTTA."
+            )
+
+        # Cria o protocolo
+        cur = conn.execute(
+            """INSERT INTO protocolos_redesim
+                 (empresa_id, tipo, numero_protocolo, status,
+                  data_solicitacao, observacoes)
+                 VALUES (?, ?, ?, ?, ?, ?)""",
+            (emp_id, tipo_protocolo, numero_protocolo, status_inicial,
+             data_solicitacao, observacoes),
+        )
+        protocolo_id = cur.lastrowid
+
+        # Vincula a tarefa GESTTA ao protocolo
+        conn.execute(
+            "UPDATE tarefas_gestta SET protocolo_id = ?, "
+            "atualizado_em = datetime('now', 'localtime') WHERE id = ?",
+            (protocolo_id, tarefa_id),
+        )
+        return protocolo_id
 
 
 def contar_tarefas_por_tipo(

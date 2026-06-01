@@ -60,6 +60,9 @@ from database import (init_db, listar_empresas, criar_empresa,
                       classificar_tipo_tarefa_gestta,
                       contar_tarefas_por_tipo,
                       reclassificar_tipos_tarefas,
+                      pular_tarefa_gestta, despular_tarefa_gestta,
+                      fila_renovacao_licencas,
+                      iniciar_protocolo_da_tarefa,
                       normalizar_nome_cliente, match_empresa_por_nome,
                       importar_tarefas_gestta, listar_tarefas_gestta,
                       atualizar_tarefa_gestta, marcar_tarefa_resolvida,
@@ -8280,6 +8283,405 @@ def _pkg_existe(nome: str) -> bool:
 
 
 # ---------------------------------------------------------
+# PÁGINA — 📋 Fila de Renovação (Licenças + VISA)
+# ---------------------------------------------------------
+def pagina_fila_renovacao():
+    st.header("📋 Fila de Renovação — Licenças & VISA")
+    st.caption(
+        "Suas tarefas GESTTA de **Licença de Funcionamento** e "
+        "**Vigilância Sanitária** que ainda não tem protocolo "
+        "REDESIM iniciado. Ordenadas pelas mais ANTIGAS primeiro — "
+        "ataque por aí."
+    )
+
+    # Reclassifica tarefas antigas sem `tipo` setado (só uma vez)
+    if not st.session_state.get("_tipos_fila_reclass"):
+        try:
+            reclassificar_tipos_tarefas(forcar=True)
+            st.session_state["_tipos_fila_reclass"] = True
+        except Exception:
+            pass
+
+    # Botão de sincronização com GESTTA
+    sb1, sb2 = st.columns([1, 3])
+    with sb1:
+        if st.button("🔄 Sincronizar GESTTA",
+                     type="primary",
+                     use_container_width=True,
+                     key="btn_fila_sync"):
+            with st.spinner("Sincronizando..."):
+                res = _sync_gestta_completo()
+            if res.get("erro"):
+                st.error(res["erro"])
+            elif res.get("aviso"):
+                st.warning(res["aviso"])
+            else:
+                st.success(
+                    f"✅ {res.get('minhas', 0)} tarefas suas "
+                    f"sincronizadas ({res.get('inseridas', 0)} novas, "
+                    f"{res.get('atualizadas', 0)} atualizadas)."
+                )
+            import time as _t
+            _t.sleep(1.0)
+            st.rerun()
+    with sb2:
+        st.caption(
+            "💡 Clica em **Sincronizar GESTTA** se você criou tarefa "
+            "nova lá agora. As classificações são atualizadas "
+            "automaticamente."
+        )
+
+    # ===== Filtros =====
+    fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
+    with fcol1:
+        tipo_filtro = st.radio(
+            "Tipo",
+            options=["Todos", "Licença de Funcionamento",
+                     "Alvará Sanitário"],
+            horizontal=True,
+            key="fila_tipo_filtro",
+        )
+    with fcol2:
+        mostrar_pulados = st.checkbox(
+            "Mostrar pulados",
+            key="fila_mostrar_pulados",
+        )
+    with fcol3:
+        st.markdown("<div style='height:28px'></div>",
+                    unsafe_allow_html=True)
+        st.caption("")
+
+    # ===== Carrega a fila =====
+    try:
+        fila_completa = fila_renovacao_licencas(
+            incluir_pulados=mostrar_pulados,
+            incluir_protocolados=False,
+        )
+    except Exception as exc:
+        st.error(f"Erro: {exc}")
+        return
+
+    # Aplica filtro de tipo
+    if tipo_filtro == "Licença de Funcionamento":
+        fila = [t for t in fila_completa
+                if t.get("tipo") == "LICENCA_FUNCIONAMENTO"]
+    elif tipo_filtro == "Alvará Sanitário":
+        fila = [t for t in fila_completa
+                if t.get("tipo") == "ALVARA_SANITARIO"]
+    else:
+        fila = fila_completa
+
+    # ===== Cards-resumo no topo =====
+    lic = [t for t in fila if t.get("tipo") == "LICENCA_FUNCIONAMENTO"]
+    visa = [t for t in fila if t.get("tipo") == "ALVARA_SANITARIO"]
+    atrasadas = sum(1 for t in fila if (
+        t.get("overdue") == 1 or
+        (t.get("atrasada") or "").upper() in ("SIM","YES","TRUE","1")
+    ))
+
+    cs = st.columns(4)
+    with cs[0]:
+        st.metric("📋 Total na fila", len(fila))
+    with cs[1]:
+        st.metric("🏢 Licença Funcionamento", len(lic))
+    with cs[2]:
+        st.metric("🏥 Vigilância Sanitária", len(visa))
+    with cs[3]:
+        st.metric("🔴 Atrasadas", atrasadas,
+                  delta=f"{int(100*atrasadas/max(1,len(fila)))}%"
+                        if fila else None,
+                  delta_color="inverse")
+
+    st.markdown("---")
+
+    if not fila:
+        st.success(
+            "🎉 Nenhuma renovação pendente na fila! Tudo protocolado "
+            "ou pulado."
+        )
+        return
+
+    # ===== Lista de cards =====
+    for idx, t in enumerate(fila, start=1):
+        _render_card_fila(idx, t)
+
+
+def _render_card_fila(idx: int, t: dict):
+    """Card individual de uma tarefa na fila de renovação."""
+    from datetime import datetime as _dt
+
+    atrasada = (t.get("overdue") == 1 or
+                (t.get("atrasada") or "").upper()
+                in ("SIM", "YES", "TRUE", "1"))
+    cor_borda = "#DC2626" if atrasada else "#1F4FD3"
+
+    # Calcula dias de atraso
+    due_str = t.get("due_date") or ""
+    dias_atraso = None
+    if due_str and len(due_str) >= 10:
+        try:
+            dt = _dt.strptime(due_str[:10], "%Y-%m-%d")
+            dias_atraso = (_dt.now() - dt).days
+        except Exception:
+            pass
+
+    tipo_label = {
+        "LICENCA_FUNCIONAMENTO": "🏢 Licença de Funcionamento",
+        "ALVARA_SANITARIO": "🏥 Vigilância Sanitária (VISA)",
+    }.get(t.get("tipo"), t.get("tipo", "?"))
+
+    municipio = t.get("empresa_municipio") or "—"
+    uf = t.get("empresa_uf") or ""
+    empresa_label = (
+        t.get("empresa_razao_social") or
+        f"⚠️ {t.get('cliente_nome', '—')} (sem empresa cadastrada)"
+    )
+    cnpj = t.get("empresa_cnpj") or "sem CNPJ"
+
+    # Header do card
+    pulado = bool(t.get("pulado"))
+    if pulado:
+        cor_borda = "#999999"
+        cor_bg = "#F5F5F5"
+    else:
+        cor_bg = "#FFFFFF"
+
+    with st.container(border=True):
+        # Linha 1: número + tipo + status atraso
+        hc1, hc2 = st.columns([3, 1])
+        with hc1:
+            st.markdown(
+                f"### {idx}. {empresa_label}"
+            )
+            sub = []
+            sub.append(f"**{tipo_label}**")
+            sub.append(f"📅 Vencimento: **{due_str[:10] or '—'}**")
+            if dias_atraso is not None and dias_atraso > 0:
+                sub.append(f"🔴 **{dias_atraso} dias** de atraso")
+            sub.append(f"🏙️ {municipio}/{uf}")
+            sub.append(f"📌 CNPJ: `{cnpj}`")
+            if t.get("status") == "IMPEDIMENT":
+                sub.append("⏸️ **Em IMPEDIMENTO no GESTTA**")
+            st.markdown(" · ".join(sub))
+
+            if pulado:
+                st.caption(
+                    f"⏭️ **PULADO** em "
+                    f"{(t.get('pulado_em') or '')[:10]} — "
+                    f"motivo: {t.get('motivo_pulado') or '—'}"
+                )
+
+            st.caption(
+                f"📋 Tarefa GESTTA: _{t.get('tarefa_nome', '—')}_"
+            )
+
+        with hc2:
+            if not pulado:
+                # Botão "Iniciar protocolo"
+                if st.button(
+                    "🚀 Iniciar protocolo",
+                    key=f"fila_iniciar_{t['id']}",
+                    type="primary",
+                    use_container_width=True,
+                    help="Abre o Facilita-SP em nova aba e mostra "
+                         "form pra colar o número quando você "
+                         "protocolar lá.",
+                ):
+                    st.session_state[
+                        "_fila_iniciar_id"
+                    ] = t["id"]
+                if st.button(
+                    "⏭️ Pular",
+                    key=f"fila_pular_{t['id']}",
+                    use_container_width=True,
+                    help="Tira da fila (não vou trabalhar agora).",
+                ):
+                    st.session_state[
+                        "_fila_pular_id"
+                    ] = t["id"]
+            else:
+                if st.button(
+                    "↩️ Despular",
+                    key=f"fila_despular_{t['id']}",
+                    use_container_width=True,
+                ):
+                    try:
+                        despular_tarefa_gestta(t["id"])
+                        st.toast("Tarefa voltou pra fila.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+        # Modal de iniciar protocolo (se selecionado)
+        if st.session_state.get("_fila_iniciar_id") == t["id"]:
+            _render_modal_iniciar_protocolo(t)
+        # Modal de pular (com motivo)
+        if st.session_state.get("_fila_pular_id") == t["id"]:
+            _render_modal_pular(t)
+
+
+def _render_modal_iniciar_protocolo(t: dict):
+    """Form inline pra iniciar o protocolo: abre Facilita-SP +
+    espera você colar o número."""
+    st.markdown("---")
+    st.markdown("#### 🚀 Iniciar protocolo no Facilita-SP")
+
+    empresa_label = (
+        t.get("empresa_razao_social") or
+        t.get("cliente_nome", "—")
+    )
+    cnpj = t.get("empresa_cnpj") or ""
+
+    cb1, cb2 = st.columns([2, 1])
+    with cb1:
+        st.markdown(
+            f"**Cliente:** {empresa_label}  \n"
+            f"**CNPJ:** `{cnpj}`  \n"
+            f"**Próximos passos:**"
+        )
+        st.markdown("""
+1. Abra o **Facilita-SP** (botão ao lado)
+2. Use o **certificado A1 do cliente** pra autenticar
+3. Solicite a **Viabilidade** (preenche CNAE, atividade, endereço)
+4. Quando o Facilita gerar o **número de protocolo**, copie e cole abaixo
+5. Clique em **"Cadastrar protocolo"** — o tracking começa
+        """)
+    with cb2:
+        st.link_button(
+            "🌐 Abrir Facilita-SP",
+            "https://www.facilitasp.sp.gov.br/",
+            use_container_width=True,
+        )
+        st.link_button(
+            "📋 REDESIM Nacional",
+            "https://www.gov.br/empresas-e-negocios/pt-br/redesim",
+            use_container_width=True,
+        )
+
+    st.markdown("---")
+    st.markdown("**Cole aqui o número de protocolo gerado:**")
+    fcol1, fcol2 = st.columns([2, 1])
+    with fcol1:
+        numero = st.text_input(
+            "Número do protocolo *",
+            key=f"fila_numero_{t['id']}",
+            placeholder="Ex.: VIA.2026.1234567 ou 0123456789",
+        )
+        obs = st.text_area(
+            "Observações iniciais (opcional)",
+            key=f"fila_obs_{t['id']}",
+            height=60,
+            placeholder=(
+                "Ex.: Aguardando análise da CETESB · CNAE 5611-2/01"
+            ),
+        )
+    with fcol2:
+        tipo_protocolo = st.radio(
+            "Tipo",
+            options=["Viabilidade", "Licenciamento"],
+            key=f"fila_tipo_prot_{t['id']}",
+            help="Comece pela Viabilidade (geralmente). "
+                 "Quando o Facilita reaproveitar o protocolo no "
+                 "Licenciamento, você muda aqui também.",
+        )
+        from datetime import date as _date
+        data_sol = st.date_input(
+            "Data de solicitação",
+            value=_date.today(),
+            key=f"fila_data_{t['id']}",
+            format="DD/MM/YYYY",
+        )
+
+    bg1, bg2 = st.columns(2)
+    with bg1:
+        if st.button(
+            "💾 Cadastrar protocolo",
+            type="primary",
+            use_container_width=True,
+            key=f"fila_save_{t['id']}",
+        ):
+            if not numero.strip():
+                st.error("Cole o número do protocolo primeiro.")
+            elif not t.get("empresa_id"):
+                st.error(
+                    "Esta tarefa não está vinculada a uma empresa "
+                    "cadastrada no app. Vá em **📋 Tarefas GESTTA → "
+                    "Tarefas pendentes** e vincule à empresa primeiro."
+                )
+            else:
+                try:
+                    pid = iniciar_protocolo_da_tarefa(
+                        tarefa_id=t["id"],
+                        numero_protocolo=numero.strip(),
+                        tipo_protocolo=tipo_protocolo,
+                        data_solicitacao=str(data_sol),
+                        observacoes=obs.strip() or None,
+                    )
+                    st.success(
+                        f"✅ Protocolo #{pid} cadastrado! "
+                        f"Tarefa GESTTA vinculada — daqui pra frente, "
+                        f"toda mudança de status vai pro GESTTA "
+                        f"automaticamente."
+                    )
+                    st.session_state.pop("_fila_iniciar_id", None)
+                    import time as _t
+                    _t.sleep(1.5)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Erro: {exc}")
+    with bg2:
+        if st.button(
+            "❌ Cancelar",
+            use_container_width=True,
+            key=f"fila_cancel_{t['id']}",
+        ):
+            st.session_state.pop("_fila_iniciar_id", None)
+            st.rerun()
+
+
+def _render_modal_pular(t: dict):
+    """Form inline pra pular tarefa (com motivo)."""
+    st.markdown("---")
+    st.markdown("#### ⏭️ Pular esta tarefa")
+    st.caption(
+        "Tira da fila. Você pode despular depois marcando "
+        "'Mostrar pulados' no filtro acima."
+    )
+
+    motivo = st.text_input(
+        "Motivo (opcional)",
+        key=f"fila_motivo_pul_{t['id']}",
+        placeholder=(
+            "Ex.: cliente vai sair, duplicado, errado, "
+            "aguardando documento..."
+        ),
+    )
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        if st.button(
+            "⏭️ Confirmar pular",
+            type="primary",
+            use_container_width=True,
+            key=f"fila_pular_ok_{t['id']}",
+        ):
+            try:
+                pular_tarefa_gestta(t["id"], motivo=motivo or None)
+                st.toast("⏭️ Tarefa pulada — saiu da fila.")
+                st.session_state.pop("_fila_pular_id", None)
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    with pc2:
+        if st.button(
+            "❌ Cancelar",
+            use_container_width=True,
+            key=f"fila_pular_cancel_{t['id']}",
+        ):
+            st.session_state.pop("_fila_pular_id", None)
+            st.rerun()
+
+
+# ---------------------------------------------------------
 # PÁGINA — 💰 Cobranças DOMÍNIO (Thomson Reuters)
 # ---------------------------------------------------------
 def pagina_cobrancas_dominio():
@@ -8876,6 +9278,7 @@ PAGINAS = {
     "📋 Tarefas GESTTA": pagina_tarefas_gestta,
     "📌 Pendências Gerais": pagina_pendencias,
     "🔬 Consultor de CNAE": pagina_consulta_cnae,
+    "📋 Fila de Renovação": pagina_fila_renovacao,
     "💰 Cobranças DOMÍNIO": pagina_cobrancas_dominio,
     "📚 Base de Regras": pagina_base_regras,
     "🏷️ Classificador CNAE": pagina_classificador,
