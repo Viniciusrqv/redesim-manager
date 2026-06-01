@@ -1,0 +1,43 @@
+# =====================================================================
+# REDESIM Manager — Keep-alive (mantém o Streamlit Cloud acordado)
+# =====================================================================
+# Streamlit Cloud free tier hiberna depois de ~8h sem acesso. Quando
+# alguém abre depois disso, leva 1-3min pra acordar (cold start).
+#
+# Este workflow faz um ping HTTP no app a cada 10 minutos em
+# horário comercial (7h às 20h BRT, seg-sex) pra mantê-lo "aquecido".
+#
+# Custo: ~78 minutos de runner/mês do GitHub Actions free tier
+# (free = 2.000 minutos/mês, então sobram 1.922 minutos pra outros
+# workflows).
+# =====================================================================
+name: Keep-alive (anti-hibernação Streamlit Cloud)
+
+on:
+  schedule:
+    # A cada 10 minutos das 10h às 23h UTC = 7h às 20h BRT
+    # GitHub Actions usa UTC; Brasília = UTC-3
+    - cron: '*/10 10-23 * * 1-5'
+  # Permite rodar manualmente pela aba Actions
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Acordar o app
+        run: |
+          echo "Pingando https://redesim-csm.streamlit.app ..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -L --max-time 60 \
+            -A "REDESIM-KeepAlive/1.0 (+csm.com.br)" \
+            https://redesim-csm.streamlit.app)
+          echo "HTTP $STATUS"
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "302" ]; then
+            echo "✓ App está vivo"
+          else
+            echo "⚠️ Status inesperado: $STATUS"
+            # Não falha o workflow só por isso — pode estar redeploying
+          fi
