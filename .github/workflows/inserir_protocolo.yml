@@ -1,0 +1,24 @@
+name: Inserir protocolo no Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Script a rodar (ex: inserir_protocolo_plenitude.py)"
+        required: true
+        default: 'inserir_protocolo_plenitude.py'
+
+jobs:
+  inserir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install psycopg2-binary
+      - name: Rodar script
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python ${{ inputs.script }}
