@@ -162,12 +162,8 @@ def usuario_atual() -> Optional[dict]:
 
 
 def exigir_login() -> dict:
-    """Bloqueia o app até o usuário logar.
-    Em DEV (sem Supabase configurado) retorna um usuário fake.
-
-    Antes de mostrar a tela de login, tenta restaurar a sessão
-    usando o refresh_token salvo em cookie (para que F5 não derrube
-    o usuário).
+    """Bloqueia o app ate o usuario logar.
+    Em DEV (sem Supabase configurado) retorna um usuario fake.
     """
     if not _supabase_disponivel():
         return {
@@ -177,18 +173,20 @@ def exigir_login() -> dict:
             "_dev": True,
         }
 
+    # Criar CookieController SEMPRE no inicio para renderizar junto com a pagina.
+    # Sem isso, o componente nao esta pronto quando precisamos ler/salvar cookies.
+    _get_cookies()
+
     user = st.session_state.get("auth_user")
     if user:
         return user
 
-    # Tenta autologin via cookie ANTES de bloquear com tela de login
-    # Na primeira renderizacao (F5), o CookieController precisa de
-    # um rerun para inicializar corretamente.
+    # Dar um rerun na primeira vez para o CookieController inicializar
     if "cookie_ctrl_init" not in st.session_state:
-        _get_cookies()
         st.session_state["cookie_ctrl_init"] = True
         st.rerun()
 
+    # Tentar autologin via cookie (F5 nao deve deslogar)
     restaurado = _restaurar_sessao_via_cookie()
     if restaurado:
         return restaurado
