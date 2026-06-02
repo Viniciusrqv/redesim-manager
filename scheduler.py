@@ -417,38 +417,6 @@ def checar_cnaes_desatualizados():
     enviar_alerta("\n".join(linhas))
 
 
-def checar_licencas_vencendo():
-    """Alerta quando licença vence em <= 45 dias."""
-    from datetime import date, timedelta
-    try:
-        todos = listar_todos_protocolos()
-    except Exception as e:
-        log.warning("checar_licencas_vencendo erro ao buscar: %s", e)
-        return
-    hoje = date.today()
-    alertas = []
-    for p in todos:
-        dv = p.get("data_vencimento")
-        if not dv:
-            continue
-        try:
-            data_venc = date.fromisoformat(dv)
-        except Exception:
-            continue
-        dias = (data_venc - hoje).days
-        if dias < 0:
-            alertas.append(f"🔴 {p.get('razao_social','?')[:30]} — licença VENCIDA há {-dias}d ({data_venc.strftime('%d/%m/%Y')})")
-        elif dias <= 45:
-            emoji = "🔴" if dias <= 15 else "🟡"
-            alertas.append(f"{emoji} {p.get('razao_social','?')[:30]} — licença vence em {dias}d ({data_venc.strftime('%d/%m/%Y')})")
-    if not alertas:
-        return
-    msg = "⏰ *Licenças vencendo em breve:*\n" + "\n".join(f"• {a}" for a in alertas)
-    for uid in _get_telegram_users():
-        send_telegram(uid, msg)
-    log.info("checar_licencas_vencendo: %d alerta(s) enviado(s)", len(alertas))
-
-
 def rodar_todos():
     """Executa os checks em sequência."""
     checar_atrasos()
@@ -456,7 +424,6 @@ def rodar_todos():
     checar_documentos_vencendo()
     checar_avcb_vencendo()
     checar_pendencias_gerais()
-    checar_licencas_vencendo()
 
 
 def main():
