@@ -1300,11 +1300,36 @@ def _bloco_protocolos_redesim_dashboard():
                     with cb:
                         st.caption(p.get("data_solicitacao") or "—")
                     st.info("📧 Pedido de reconsideração enviado para a Prefeitura de Cotia.")
-                    if st.button("✅ Nova análise recebida — registrar novo protocolo", key=f"new_proto_{p['id']}", use_container_width=True, type="primary"):
-                        from database import atualizar_status_protocolo
-                        atualizar_status_protocolo(p["id"], "Inativa", observacoes="Substituído por nova análise após reconsideração.")
-                        _invalidar_cache_db()
-                        import time as _t; _t.sleep(0.5); st.rerun()
+                    st.caption("Quando receber o novo protocolo da prefeitura, informe abaixo:")
+                    _new_proto = st.text_input(
+                        "Novo protocolo recebido",
+                        placeholder="Ex: SPM2630312354",
+                        key=f"new_proto_num_{p['id']}",
+                        label_visibility="collapsed",
+                    )
+                    if st.button("✅ Registrar novo protocolo e retomar fluxo", key=f"new_proto_{p['id']}", use_container_width=True, type="primary", disabled=not _new_proto.strip()):
+                        if _new_proto.strip():
+                            _obs_nova = (
+                                f"Reconsideração aprovada pela Prefeitura.\n"
+                                f"Novo protocolo de viabilidade: {_new_proto.strip()}\n"
+                                "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                            )
+                            novo_via_id = criar_protocolo_redesim(
+                                empresa_id=p["empresa_id"],
+                                tipo=TIPO_PROTOCOLO_VIABILIDADE,
+                                numero_protocolo=_new_proto.strip(),
+                                data_solicitacao=_dt.now().strftime("%Y-%m-%d"),
+                                status="Em análise",
+                                observacoes=_obs_nova,
+                            )
+                            _, info_g = atualizar_status_protocolo_com_gestta(
+                                p["id"], "Inativa",
+                                observacoes=_obs_nova,
+                            )
+                            st.toast(f"Novo protocolo {_new_proto.strip()} registrado! Retomando fluxo de viabilidade.")
+                            _mostrar_feedback_gestta(info_g, "Inativa")
+                            _invalidar_cache_db()
+                            import time as _t; _t.sleep(0.8); st.rerun()
 
         with col_arrow:
             st.markdown(
