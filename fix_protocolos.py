@@ -2,30 +2,25 @@ import os, psycopg2
 conn = psycopg2.connect(os.environ["DATABASE_URL"])
 cur = conn.cursor()
 
-# 1. Corrigir PLENITUDE — voltar para Em analise
-cur.execute("UPDATE protocolos_redesim SET status = 'Em analise' WHERE numero_protocolo = %s AND status = 'Aprovada'", ("SPM2630308582",))
-print(f"PLENITUDE corrigida: {cur.rowcount} linha(s)")
+# 1. Listar todos os licenciamentos da ASN para entender
+cur.execute("SELECT id, status, criado_em FROM protocolos_redesim WHERE numero_protocolo = %s AND tipo = 'Licenciamento' ORDER BY id", ("SPM2630283391",))
+rows = cur.fetchall()
+for r in rows:
+    print(f"  Licenciamento id={r[0]} status={r[1]} criado={r[2]}")
 
-# 2. Buscar empresa_id da ASN BRASIL pelo protocolo
-cur.execute("SELECT p.empresa_id, p.id FROM protocolos_redesim p WHERE p.numero_protocolo = %s", ("SPM2630283391",))
-row = cur.fetchone()
-if row:
-    empresa_id, via_id = row
-    print(f"ASN BRASIL: empresa_id={empresa_id} via_id={via_id}")
-    
-    # 3. Criar registro de Licenciamento ja concluido
-    cur.execute("""INSERT INTO protocolos_redesim (empresa_id, numero_protocolo, tipo, status, observacoes, data_solicitacao)
-                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                (empresa_id, "SPM2630283391", "Licenciamento", "Concluida",
-                 "CLI emitido. Licenca enviada ao cliente. Concluido manualmente.\n_(mensagem gerada pelo Claude)_",
-                 "2026-05-19"))
-    lic_id = cur.fetchone()[0]
-    print(f"Licenciamento ASN criado: id={lic_id}")
-    
-    # 4. Marcar viabilidade ASN como Aprovada (manter) - ja esta assim
-    print(f"Viabilidade ASN permanece Aprovada")
-else:
-    print("ASN BRASIL protocolo nao encontrado!")
+# 2. Manter apenas o mais recente como Concluida, marcar outros como Inativa
+if len(rows) > 1:
+    # Manter o que esta Concluida, inativar os outros
+    for r in rows:
+        if r[1] != 'Concluida':
+            cur.execute("UPDATE protocolos_redesim SET status = 'Inativa', observacoes = 'Duplicata removida - registro correto: Concluida' WHERE id = %s", (r[0],))
+            print(f"  Inativado duplicado id={r[0]}")
+
+# 3. Verificar status final da Viabilidade ASN (deve estar Aprovada)
+cur.execute("SELECT id, status FROM protocolos_redesim WHERE numero_protocolo = %s AND tipo = 'Viabilidade'", ("SPM2630283391",))
+v = cur.fetchone()
+if v:
+    print(f"Viabilidade ASN: id={v[0]} status={v[1]}")
 
 conn.commit()
 cur.close(); conn.close()
