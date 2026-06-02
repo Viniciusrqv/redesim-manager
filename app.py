@@ -1793,6 +1793,24 @@ def pagina_dashboard():
         "resolver / dar baixa em um item, ele sai automaticamente daqui."
     )
 
+    # Botão de sync manual GESTTA
+    _sc1, _sc2, _sc3 = st.columns([6, 2, 2])
+    with _sc2:
+        if st.button("🔄 Sync GESTTA", use_container_width=True, help="Atualiza tarefas do GESTTA agora (sincroniza status e novas tarefas)"):
+            with st.spinner("Sincronizando com GESTTA..."):
+                try:
+                    from scheduler import sincronizar_tarefas_gestta
+                    sincronizar_tarefas_gestta()
+                    _invalidar_cache_db()
+                    st.toast("✅ GESTTA sincronizado!")
+                    import time as _t; _t.sleep(0.5); st.rerun()
+                except Exception as _e:
+                    st.error(f"Erro ao sincronizar: {_e}")
+    with _sc3:
+        if st.button("⟳ Recarregar", use_container_width=True, help="Recarrega os dados do dashboard"):
+            _invalidar_cache_db()
+            st.rerun()
+
     # === Resumo super-consolidado no topo ===
     _resumo_consolidado_dashboard()
 
