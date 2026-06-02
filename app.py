@@ -1244,8 +1244,7 @@ def _bloco_protocolos_redesim_dashboard():
                                             f"Protocolo: {_pr}\n"
                                             f"Empresa: {_razao}\n"
                                             f"CNPJ: {_cnpj_fmt}\n\n"
-                                            f"Aguardo retorno.\n\n"
-                                            f"Atenciosamente,\nCSM Contabilidade Empresarial\nTel: (11) 4616-5887"
+                                            f"Aguardo retorno."
                                         )
                                         _obs = f"Viabilidade Nao Aprovada (VRE/JUCESP).\nPedido de reconsideracao enviado para {_em}.\nProtocolo: {_pr}\n_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
                                         _, info_g = atualizar_status_protocolo_com_gestta(p["id"], "Aguardando Reconsideração", observacoes=_obs)
