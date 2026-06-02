@@ -417,6 +417,82 @@ def checar_cnaes_desatualizados():
     enviar_alerta("\n".join(linhas))
 
 
+def sincronizar_tarefas_gestta():
+    """Sincroniza tarefas do GESTTA com o banco local (status, novas tarefas)."""
+    import urllib.request, json, datetime
+    try:
+        with get_conn() as conn:
+            # Buscar JWTs salvos de todos os usuários
+            rows = conn.execute("SELECT email, jwt_token FROM usuarios_gestta_jwt").fetchall()
+    except Exception as e:
+        log.warning("sincronizar_tarefas_gestta: erro ao buscar JWTs: %s", e)
+        return
+
+    if not rows:
+        log.info("sincronizar_tarefas_gestta: nenhum JWT configurado")
+        return
+
+    for email, jwt in rows:
+        if not jwt:
+            continue
+        try:
+            # Buscar tarefas abertas + concluídas recentes do GESTTA
+            payload = json.dumps({
+                "status": ["OPEN", "IMPEDIMENT", "DONE"],
+                "limit": 200,
+                "date_type": "DUE_DATE",
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.gestta.com.br/core/customer/task/search",
+                data=payload,
+                headers={"Authorization": jwt, "Content-Type": "application/json",
+                         "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            tarefas = data.get("docs", [])
+
+            atualizadas = 0
+            with get_conn() as conn:
+                for t in tarefas:
+                    gid = t.get("_id")
+                    status = t.get("status", "OPEN")
+                    nome = (t.get("name") or t.get("tarefa_nome") or "")[:120]
+                    cliente = (t.get("customer", {}) or {}).get("name", "")[:120]
+                    due = t.get("dueDate") or t.get("due_date") or ""
+                    if not gid:
+                        continue
+                    # Verificar se já existe
+                    exists = conn.execute(
+                        "SELECT id, status_gestta FROM tarefas_gestta WHERE gestta_id = ?", (gid,)
+                    ).fetchone()
+                    if exists:
+                        if exists[1] != status:
+                            conn.execute(
+                                "UPDATE tarefas_gestta SET status_gestta = ?, atrasada = ? WHERE gestta_id = ?",
+                                (status, "1" if status in ("OPEN", "IMPEDIMENT") else "0", gid),
+                            )
+                            atualizadas += 1
+                    else:
+                        # Nova tarefa — inserir
+                        cliente_norm = cliente.upper().strip()
+                        conn.execute(
+                            """INSERT OR IGNORE INTO tarefas_gestta
+                               (gestta_id, tarefa_nome, cliente_nome, cliente_norm,
+                                status_gestta, atrasada, due_date)
+                               VALUES (?,?,?,?,?,?,?)""",
+                            (gid, nome, cliente, cliente_norm, status,
+                             "1" if status in ("OPEN", "IMPEDIMENT") else "0", due),
+                        )
+                        atualizadas += 1
+
+            log.info("sincronizar_tarefas_gestta [%s]: %d tarefa(s) atualizadas", email, atualizadas)
+
+        except Exception as e:
+            log.warning("sincronizar_tarefas_gestta [%s]: erro: %s", email, e)
+
+
 def rodar_todos():
     """Executa os checks em sequência."""
     checar_atrasos()
@@ -424,6 +500,7 @@ def rodar_todos():
     checar_documentos_vencendo()
     checar_avcb_vencendo()
     checar_pendencias_gerais()
+    sincronizar_tarefas_gestta()
 
 
 def main():
