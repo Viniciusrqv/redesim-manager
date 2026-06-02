@@ -1288,11 +1288,6 @@ def _bloco_protocolos_redesim_dashboard():
                                 ),
                             )
                             st.toast("CLI emitido! Cobrança DOMÍNIO gerada automaticamente.")
-                            st.warning(
-                                "⚠️ **Atualize o vencimento no GESTTA** — acesse o cadastro "
-                                "do cliente e registre a nova data de vencimento para o "
-                                "alerta de 45 dias funcionar."
-                            )
                             _mostrar_feedback_gestta(info_g, "Concluída")
                             _invalidar_cache_db()
                             import time as _t
@@ -1317,47 +1312,6 @@ def _bloco_protocolos_redesim_dashboard():
                             import time as _t
                             _t.sleep(0.8)
                             st.rerun()
-                    # ── Data de vencimento da licença ──────────────────────
-                    venc = p.get("data_vencimento")
-                    if venc:
-                        from datetime import date as _date
-                        try:
-                            dv = _dt.strptime(venc, "%Y-%m-%d").date()
-                            dias_rest = (dv - _date.today()).days
-                            if dias_rest <= 0:
-                                st.error(f"⚠️ Licença VENCIDA em {dv.strftime('%d/%m/%Y')}")
-                            elif dias_rest <= 45:
-                                st.warning(f"⏰ Vence em {dias_rest}d ({dv.strftime('%d/%m/%Y')}) — iniciar renovação!")
-                            else:
-                                st.success(f"📅 Vencimento: {dv.strftime('%d/%m/%Y')} ({dias_rest}d)")
-                        except Exception:
-                            st.caption(f"📅 Vencimento: {venc}")
-                    col_dv, col_dv_btn = st.columns([3, 1])
-                    with col_dv:
-                        import datetime as _datetime
-                        val_dv = None
-                        if venc:
-                            try: val_dv = _datetime.date.fromisoformat(venc)
-                            except Exception: pass
-                        nova_data = st.date_input(
-                            "Data vencimento CLI",
-                            value=val_dv,
-                            format="DD/MM/YYYY",
-                            key=f"dv_{p['id']}",
-                            label_visibility="collapsed",
-                            help="Registre o vencimento da licença para alerta 45 dias antes",
-                        )
-                    with col_dv_btn:
-                        if st.button("💾", key=f"dv_save_{p['id']}", help="Salvar vencimento", use_container_width=True):
-                            from database import get_conn as _gc
-                            with _gc() as _c:
-                                _c.execute(
-                                    "UPDATE protocolos_redesim SET data_vencimento = ? WHERE id = ?",
-                                    (nova_data.strftime("%Y-%m-%d") if nova_data else None, p["id"]),
-                                )
-                            st.toast(f"Vencimento salvo: {nova_data.strftime('%d/%m/%Y') if nova_data else 'removido'}")
-                            _invalidar_cache_db()
-                            import time as _t; _t.sleep(0.5); st.rerun()
 
         st.caption(
             f"🔴 ≥ {DIAS_VERMELHO}d · 🟡 ≥ {DIAS_AMARELO}d · 🟢 ok. "
