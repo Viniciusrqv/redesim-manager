@@ -2,25 +2,36 @@ import os, psycopg2
 conn = psycopg2.connect(os.environ["DATABASE_URL"])
 cur = conn.cursor()
 
-# 1. Listar todos os licenciamentos da ASN para entender
-cur.execute("SELECT id, status, criado_em FROM protocolos_redesim WHERE numero_protocolo = %s AND tipo = 'Licenciamento' ORDER BY id", ("SPM2630283391",))
-rows = cur.fetchall()
-for r in rows:
-    print(f"  Licenciamento id={r[0]} status={r[1]} criado={r[2]}")
+CNPJ = "45407551000102"
+NOVO_PROTO = "SPM2630312354"
+OLD_PROTO = "SPM2630308582"
 
-# 2. Manter apenas o mais recente como Concluida, marcar outros como Inativa
-if len(rows) > 1:
-    # Manter o que esta Concluida, inativar os outros
-    for r in rows:
-        if r[1] != 'Concluida':
-            cur.execute("UPDATE protocolos_redesim SET status = 'Inativa', observacoes = 'Duplicata removida - registro correto: Concluida' WHERE id = %s", (r[0],))
-            print(f"  Inativado duplicado id={r[0]}")
+# 1. Buscar empresa
+cur.execute("SELECT id FROM empresas WHERE cnpj = %s", (CNPJ,))
+row = cur.fetchone()
+if not row:
+    print("Empresa nao encontrada!")
+else:
+    empresa_id = row[0]
+    print(f"Empresa id={empresa_id}")
 
-# 3. Verificar status final da Viabilidade ASN (deve estar Aprovada)
-cur.execute("SELECT id, status FROM protocolos_redesim WHERE numero_protocolo = %s AND tipo = 'Viabilidade'", ("SPM2630283391",))
-v = cur.fetchone()
-if v:
-    print(f"Viabilidade ASN: id={v[0]} status={v[1]}")
+    # 2. Marcar protocolo antigo como Inativa
+    cur.execute("UPDATE protocolos_redesim SET status = 'Inativa', observacoes = 'Substituido por novo protocolo apos reconsideracao: ' || %s WHERE numero_protocolo = %s AND status != 'Inativa'",
+                (NOVO_PROTO, OLD_PROTO))
+    print(f"Antigo inativado: {cur.rowcount} linha(s)")
+
+    # 3. Criar novo protocolo de viabilidade
+    cur.execute("SELECT id FROM protocolos_redesim WHERE numero_protocolo = %s", (NOVO_PROTO,))
+    if cur.fetchone():
+        print(f"Protocolo {NOVO_PROTO} ja existe")
+    else:
+        cur.execute("""INSERT INTO protocolos_redesim
+                       (empresa_id, numero_protocolo, tipo, status, observacoes, data_solicitacao)
+                       VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (empresa_id, NOVO_PROTO, "Viabilidade", "Em analise",
+                     "Nova viabilidade apos reconsideracao aprovada pela Prefeitura de Cotia.", "2026-06-02"))
+        new_id = cur.fetchone()[0]
+        print(f"Novo protocolo criado: id={new_id}")
 
 conn.commit()
 cur.close(); conn.close()
