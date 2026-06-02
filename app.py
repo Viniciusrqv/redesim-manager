@@ -1104,9 +1104,12 @@ def _bloco_protocolos_redesim_dashboard():
                           if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
                           and p["status"] == "Aguardando Reconsideração"
                           and not p.get("substituido_por_id")]
+    numeros_com_lic = {p["numero_protocolo"] for p in todos
+                     if p["tipo"] == TIPO_PROTOCOLO_LICENCIAMENTO}
     via_aprovadas = [p for p in todos
                      if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
                      and p["status"] == "Aprovada"
+                     and p["numero_protocolo"] not in numeros_com_lic
                      and not p.get("substituido_por_id")]
     lic_andamento = [p for p in todos
                      if p["tipo"] == TIPO_PROTOCOLO_LICENCIAMENTO
@@ -1177,18 +1180,23 @@ def _bloco_protocolos_redesim_dashboard():
                             use_container_width=True,
                             type="primary",
                         ):
-                            novo_id = criar_protocolo_redesim(
-                                empresa_id=p["empresa_id"],
-                                tipo=TIPO_PROTOCOLO_LICENCIAMENTO,
-                                numero_protocolo=p["numero_protocolo"],
-                                data_solicitacao=p.get("data_solicitacao"),
-                                status="Em análise",
-                                observacoes=(
-                                    "Licenciamento iniciado após viabilidade aprovada.\n"
-                                    "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
-                                ),
-                            )
-                            st.toast(f"Licenciamento registrado (ID {novo_id}).")
+                            lic_dup = next((x for x in todos if x["tipo"] == TIPO_PROTOCOLO_LICENCIAMENTO and x["numero_protocolo"] == p["numero_protocolo"]), None)
+                            if lic_dup:
+                                st.warning(f"Licenciamento já existe (status: {lic_dup['status']}). Veja na Etapa 2.")
+                            else:
+                                novo_id = criar_protocolo_redesim(
+                                    empresa_id=p["empresa_id"],
+                                    tipo=TIPO_PROTOCOLO_LICENCIAMENTO,
+                                    numero_protocolo=p["numero_protocolo"],
+                                    data_solicitacao=p.get("data_solicitacao"),
+                                    status="Em análise",
+                                    observacoes=(
+                                        "Licenciamento iniciado após viabilidade aprovada.
+"
+                                        "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                    ),
+                                )
+                                st.toast(f"Licenciamento registrado (ID {novo_id}).")
                             _invalidar_cache_db()
                             import time as _t
                             _t.sleep(0.8)
