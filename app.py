@@ -1234,8 +1234,19 @@ def _bloco_protocolos_redesim_dashboard():
                                         import urllib.parse as _up
                                         _em = "diretrizes.shdu@cotia.sp.gov.br"
                                         _pr = p["numero_protocolo"]
-                                        _subj = _up.quote(f"Nova Analise - Protocolo {_pr}")
-                                        _body = _up.quote(f"Prezados,\n\nSolicito nova analise do protocolo {_pr} que consta como Viabilidade Nao Aprovada.\n\nAtenciosamente,\nCSM Contabilidade")
+                                        _razao = p.get("razao_social", "")
+                                        _cnpj_raw = p.get("cnpj", "")
+                                        _cnpj_fmt = f"{_cnpj_raw[:2]}.{_cnpj_raw[2:5]}.{_cnpj_raw[5:8]}/{_cnpj_raw[8:12]}-{_cnpj_raw[12:]}" if len(_cnpj_raw) == 14 else _cnpj_raw
+                                        _subj = _up.quote(f"Solicitacao de Nova Analise - Protocolo {_pr}")
+                                        _body = _up.quote(
+                                            f"Prezados,\n\n"
+                                            f"Solicito nova analise do protocolo abaixo, que consta como Viabilidade Nao Aprovada:\n\n"
+                                            f"Protocolo: {_pr}\n"
+                                            f"Empresa: {_razao}\n"
+                                            f"CNPJ: {_cnpj_fmt}\n\n"
+                                            f"Aguardo retorno.\n\n"
+                                            f"Atenciosamente,\nCSM Contabilidade Empresarial\nTel: (11) 4616-5887"
+                                        )
                                         _obs = f"Viabilidade Nao Aprovada (VRE/JUCESP).\nPedido de reconsideracao enviado para {_em}.\nProtocolo: {_pr}\n_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
                                         _, info_g = atualizar_status_protocolo_com_gestta(p["id"], "Aguardando Reconsideração", observacoes=_obs)
                                         st.session_state.pop(_k_recon, None)
