@@ -1256,7 +1256,6 @@ def _bloco_protocolos_redesim_dashboard():
                                         _obs = f"Viabilidade Nao Aprovada (VRE/JUCESP).\nPedido de reconsideracao enviado para {_em}.\nProtocolo: {_pr}\n_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
                                         _, info_g = atualizar_status_protocolo_com_gestta(p["id"], "Aguardando Reconsideração", observacoes=_obs)
                                         st.session_state.pop(_k_recon, None)
-                                        st.markdown(f"📧 [Abrir e-mail](mailto:{_em}?subject={_subj}&body={_body})")
                                         st.toast("Reconsideração registrada! GESTTA anotado.")
                                         _mostrar_feedback_gestta(info_g, "Aguardando Reconsideração")
                                         _invalidar_cache_db()
@@ -1299,8 +1298,13 @@ def _bloco_protocolos_redesim_dashboard():
                         st.caption(f"`{p['numero_protocolo']}` · Aguardando Reconsideração · {dias}d")
                     with cb:
                         st.caption(p.get("data_solicitacao") or "—")
-                    st.info("📧 Pedido de reconsideração enviado para a Prefeitura de Cotia.")
-                    st.caption("Quando receber o novo protocolo da prefeitura, informe abaixo:")
+                    import urllib.parse as _up2
+                    _em2 = "diretrizes.shdu@cotia.sp.gov.br"
+                    _pr2 = p["numero_protocolo"]
+                    _s2 = _up2.quote(f"Solicitacao de Nova Analise - Protocolo {_pr2}")
+                    _b2 = _up2.quote(f"Prezados,\n\nSolicito nova analise do protocolo {_pr2} que consta como Viabilidade Nao Aprovada.\n\nAguardo retorno.")
+                    st.link_button("📧 Abrir e-mail no Outlook", f"mailto:{_em2}?subject={_s2}&body={_b2}", use_container_width=True)
+                    st.caption("Clique para abrir o Outlook com e-mail pré-preenchido para a Prefeitura de Cotia. Depois de enviar, informe o novo protocolo abaixo.")
                     _new_proto = st.text_input(
                         "Novo protocolo recebido",
                         placeholder="Ex: SPM2630312354",
