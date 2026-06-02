@@ -1098,7 +1098,12 @@ def _bloco_protocolos_redesim_dashboard():
     via_andamento = [p for p in todos
                      if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
                      and p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
+                     and p["status"] != "Aguardando Reconsideração"
                      and not p.get("substituido_por_id")]
+    via_reconsideracao = [p for p in todos
+                          if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
+                          and p["status"] == "Aguardando Reconsideração"
+                          and not p.get("substituido_por_id")]
     via_aprovadas = [p for p in todos
                      if p["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
                      and p["status"] == "Aprovada"
@@ -1108,7 +1113,7 @@ def _bloco_protocolos_redesim_dashboard():
                      and p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
                      and not p.get("substituido_por_id")]
 
-    todos_ativos = via_andamento + via_aprovadas + lic_andamento
+    todos_ativos = via_andamento + via_aprovadas + via_reconsideracao + lic_andamento
     if not todos_ativos:
         return
 
@@ -1147,7 +1152,8 @@ def _bloco_protocolos_redesim_dashboard():
             st.markdown("#### 📋 Etapa 1 — Viabilidade")
             st.caption(
                 f"{len(via_andamento)} em análise · "
-                f"{len(via_aprovadas)} aprovada(s) aguardando"
+                f"{len(via_aprovadas)} aprovada(s) · "
+                f"{len(via_reconsideracao)} aguardando reconsideração"
             )
             for p in via_andamento + via_aprovadas:
                 dias = _dias(p)
@@ -1210,24 +1216,38 @@ def _bloco_protocolos_redesim_dashboard():
                                 _t.sleep(0.8)
                                 st.rerun()
                         with b2:
-                            if st.button(
-                                "❌ Indeferida",
-                                key=f"ind_{p['id']}",
-                                use_container_width=True,
-                            ):
-                                _, info_g = atualizar_status_protocolo_com_gestta(
-                                    p["id"], "Indeferida",
-                                    observacoes=(
-                                        "Viabilidade indeferida.\n"
-                                        "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
-                                    ),
-                                )
-                                st.toast("Indeferida.")
-                                _mostrar_feedback_gestta(info_g, "Indeferida")
-                                _invalidar_cache_db()
-                                import time as _t
-                                _t.sleep(0.8)
-                                st.rerun()
+                            _k_recon = f"recon_{p['id']}"
+                            if not st.session_state.get(_k_recon):
+                                if st.button(
+                                    "❌ Indeferida",
+                                    key=f"ind_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state[_k_recon] = True
+                                    st.rerun()
+                            else:
+                                st.error("⚠️ Viabilidade Não Aprovada")
+                                st.caption("Motivo: análise automática VRE/JUCESP — atividade Não Passível no endereço.")
+                                _r1c, _r2c = st.columns(2)
+                                with _r1c:
+                                    if st.button("📧 Solicitar Reconsideração", key=f"send_rc_{p['id']}", use_container_width=True, type="primary"):
+                                        import urllib.parse as _up
+                                        _em = "diretrizes.shdu@cotia.sp.gov.br"
+                                        _pr = p["numero_protocolo"]
+                                        _subj = _up.quote(f"Nova Analise - Protocolo {_pr}")
+                                        _body = _up.quote(f"Prezados,\n\nSolicito nova analise do protocolo {_pr} que consta como Viabilidade Nao Aprovada.\n\nAtenciosamente,\nCSM Contabilidade")
+                                        _obs = f"Viabilidade Nao Aprovada (VRE/JUCESP).\nPedido de reconsideracao enviado para {_em}.\nProtocolo: {_pr}\n_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
+                                        _, info_g = atualizar_status_protocolo_com_gestta(p["id"], "Aguardando Reconsideração", observacoes=_obs)
+                                        st.session_state.pop(_k_recon, None)
+                                        st.markdown(f"📧 [Abrir e-mail](mailto:{_em}?subject={_subj}&body={_body})")
+                                        st.toast("Reconsideração registrada! GESTTA anotado.")
+                                        _mostrar_feedback_gestta(info_g, "Aguardando Reconsideração")
+                                        _invalidar_cache_db()
+                                        import time as _t; _t.sleep(1.0); st.rerun()
+                                with _r2c:
+                                    if st.button("← Cancelar", key=f"cancel_rc_{p['id']}", use_container_width=True):
+                                        st.session_state.pop(_k_recon, None)
+                                        st.rerun()
                         with b3:
                             if st.button(
                                 "🚫 Cancelar",
@@ -1247,6 +1267,27 @@ def _bloco_protocolos_redesim_dashboard():
                                 import time as _t
                                 _t.sleep(0.8)
                                 st.rerun()
+
+            # ── Protocolos aguardando reconsideração ──────────────────────
+            if via_reconsideracao:
+                st.markdown("---")
+                st.markdown("##### 🔄 Aguardando Reconsideração")
+            for p in via_reconsideracao:
+                dias = _dias(p)
+                razao = p.get("razao_social", "?")
+                with st.container(border=True):
+                    ca, cb = st.columns([3, 1])
+                    with ca:
+                        st.markdown(f"🔄 **{razao}**")
+                        st.caption(f"`{p['numero_protocolo']}` · Aguardando Reconsideração · {dias}d")
+                    with cb:
+                        st.caption(p.get("data_solicitacao") or "—")
+                    st.info("📧 Pedido de reconsideração enviado para a Prefeitura de Cotia.")
+                    if st.button("✅ Nova análise recebida — registrar novo protocolo", key=f"new_proto_{p['id']}", use_container_width=True, type="primary"):
+                        from database import atualizar_status_protocolo
+                        atualizar_status_protocolo(p["id"], "Inativa", observacoes="Substituído por nova análise após reconsideração.")
+                        _invalidar_cache_db()
+                        import time as _t; _t.sleep(0.5); st.rerun()
 
         with col_arrow:
             st.markdown(
