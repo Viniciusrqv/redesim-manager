@@ -1780,6 +1780,7 @@ TIPOS_PROTOCOLO_REDESIM = [
 # Status válidos (reais do portal Facilita-SP/REDESIM)
 STATUS_PROTOCOLO_VIABILIDADE = [
     "Em análise",
+    "Aguardando Reconsideração",
     "Aprovada",
     "Indeferida",
     "Cancelada",
