@@ -182,6 +182,13 @@ def exigir_login() -> dict:
         return user
 
     # Tenta autologin via cookie ANTES de bloquear com tela de login
+    # Na primeira renderizacao (F5), o CookieController precisa de
+    # um rerun para inicializar corretamente.
+    if "cookie_ctrl_init" not in st.session_state:
+        _get_cookies()
+        st.session_state["cookie_ctrl_init"] = True
+        st.rerun()
+
     restaurado = _restaurar_sessao_via_cookie()
     if restaurado:
         return restaurado
