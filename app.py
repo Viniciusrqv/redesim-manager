@@ -1191,8 +1191,7 @@ def _bloco_protocolos_redesim_dashboard():
                                     data_solicitacao=p.get("data_solicitacao"),
                                     status="Em análise",
                                     observacoes=(
-                                        "Licenciamento iniciado após viabilidade aprovada.
-"
+                                        "Licenciamento iniciado após viabilidade aprovada.\n"
                                         "_(mensagem gerada pelo Claude — REDESIM Manager CSM)_"
                                     ),
                                 )
