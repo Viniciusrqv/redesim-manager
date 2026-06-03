@@ -493,6 +493,42 @@ def sincronizar_tarefas_gestta():
             log.warning("sincronizar_tarefas_gestta [%s]: erro: %s", email, e)
 
 
+def checar_normas_vencendo():
+    """Alerta quando bases legais precisam de atualizacao (> 180 dias)."""
+    try:
+        from database import get_conn
+        import datetime
+        hoje = datetime.date.today()
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT base, titulo, ultima_atualizacao, versao FROM normas_atualizacao"
+            ).fetchall()
+        alertas = []
+        for r in rows:
+            base, titulo, ultima, versao = r[0], r[1], r[2], r[3]
+            if not ultima:
+                alertas.append(f"⚪ {titulo[:35]} — NUNCA atualizada")
+            else:
+                try:
+                    data_ult = datetime.date.fromisoformat(str(ultima)[:10])
+                    dias = (hoje - data_ult).days
+                    if dias > 180:
+                        alertas.append(f"🔴 {titulo[:35]} — {dias}d sem atualizar")
+                    elif dias > 90:
+                        alertas.append(f"🟡 {titulo[:35]} — {dias}d (revisar em breve)")
+                except Exception:
+                    pass
+        if not alertas:
+            return
+        msg = "📋 *Bases legais que precisam de atençao:*\n" + "\n".join(f"• {a}" for a in alertas)
+        msg += "\n\nAcesse: *Atualizar Normas* no REDESIM Manager."
+        for uid in _get_telegram_users():
+            send_telegram(uid, msg)
+        log.info("checar_normas_vencendo: %d alerta(s)", len(alertas))
+    except Exception as e:
+        log.warning("checar_normas_vencendo erro: %s", e)
+
+
 def rodar_todos():
     """Executa os checks em sequência."""
     checar_atrasos()
@@ -501,6 +537,7 @@ def rodar_todos():
     checar_avcb_vencendo()
     checar_pendencias_gerais()
     sincronizar_tarefas_gestta()
+    checar_normas_vencendo()
 
 
 def main():
