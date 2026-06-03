@@ -1,48 +1,24 @@
-import os, psycopg2, json, urllib.request
-from collections import Counter
-
+import os, psycopg2
 conn = psycopg2.connect(os.environ["DATABASE_URL"])
 cur = conn.cursor()
-cur.execute("SELECT jwt FROM usuarios_gestta_jwt WHERE ativo = 1 LIMIT 1")
-row = cur.fetchone()
+
+cur.execute("SELECT COUNT(*) FROM tarefas_gestta WHERE status_gestta IN ('OPEN','IMPEDIMENT')")
+abertas = cur.fetchone()[0]
+
+cur.execute("SELECT COUNT(*) FROM tarefas_gestta")
+total = cur.fetchone()[0]
+
+cur.execute("SELECT COUNT(*) FROM tarefas_gestta WHERE status_gestta = 'DONE'")
+concluidas = cur.fetchone()[0]
+
+cur.execute("SELECT MAX(atualizado_em) FROM tarefas_gestta")
+ultima = cur.fetchone()[0]
+
+print(f"=== TAREFAS NO BANCO LOCAL ===")
+print(f"Total no banco: {total}")
+print(f"Abertas (OPEN+IMPEDIMENT): {abertas}")
+print(f"Concluidas (DONE): {concluidas}")
+print(f"Ultima atualizacao: {ultima}")
+
 cur.close(); conn.close()
-
-jwt = row[0] if row else None
-if not jwt:
-    print("JWT nao encontrado"); exit()
-
-print("JWT encontrado - buscando tarefas Vinicius Rafael...")
-payload = json.dumps({"company_user":"679a775ef183530038cae49c","status":["OPEN","IMPEDIMENT"],"limit":300}).encode()
-req = urllib.request.Request("https://api.gestta.com.br/core/customer/task/search",
-    data=payload, headers={"Authorization":jwt,"Content-Type":"application/json","Accept":"application/json"}, method="POST")
-with urllib.request.urlopen(req, timeout=20) as resp:
-    data = json.loads(resp.read())
-
-docs = data.get("docs",[])
-total = data.get("total", len(docs))
-atrasadas = sum(1 for t in docs if t.get("overdue"))
-impediment = sum(1 for t in docs if t.get("status")=="IMPEDIMENT")
-
-print(f"=== RESUMO VINICIUS RAFAEL ===")
-print(f"Total abertas: {total}")
-print(f"Atrasadas: {atrasadas}")
-print(f"No prazo: {total-atrasadas}")
-print(f"Com impedimento: {impediment}")
-
-tipos = Counter()
-for t in docs:
-    nome = (t.get("name") or "").lower()
-    if "licen" in nome or "alvara" in nome or "alvará" in nome: tipos["Licenca/Alvara"] += 1
-    elif "abertura" in nome: tipos["Abertura"] += 1
-    elif "altera" in nome: tipos["Alteracao"] += 1
-    elif "devolu" in nome: tipos["Devolucao"] += 1
-    elif "irpf" in nome or "carne" in nome: tipos["IRPF/Fiscal"] += 1
-    elif "bombeiro" in nome or "avcb" in nome: tipos["Bombeiros"] += 1
-    elif "sanit" in nome or "visa" in nome: tipos["Vig.Sanitaria"] += 1
-    elif "exclus" in nome: tipos["Exclusao"] += 1
-    elif "acomp" in nome or "protocolo" in nome: tipos["Acompanhamento"] += 1
-    else: tipos["Outros"] += 1
-
-print("Por tipo:")
-for k,v in tipos.most_common(): print(f"  {k}: {v}")
 print("Concluido.")
