@@ -533,6 +533,7 @@ PAGINAS_LIST = [
     "🏢 Empresas / REDESIM",
     "📋 Tarefas GESTTA",
     "📌 Pendências Gerais",
+    "💰 Cobranças DOMÍNIO",
     "🔬 Consultor de CNAE",
     "🏷️ Classificador CNAE",
     "📋 Matriz de Risco CNAE",
