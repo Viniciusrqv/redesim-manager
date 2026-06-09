@@ -13,32 +13,35 @@ with open("database.py", "r", encoding="utf-8") as f:
 
 db_changed = False
 
-# 1. Migration — coluna comissao
-if "cobrancas_dominio.comissao" not in db:
-    OLD = '''        # ── cobrancas_dominio: garantir coluna valor_lancado ──
-        try:
-            cols_cob = {r["name"] for r in conn.execute("PRAGMA table_info(cobrancas_dominio);")}
-        except sqlite3.OperationalError:
-            cols_cob = set()'''
-    NEW = '''        # ── cobrancas_dominio: garantir colunas valor_lancado + comissao ──
-        # cobrancas_dominio.comissao — valor da comissão do contador
-        try:
-            cols_cob = {r["name"] for r in conn.execute("PRAGMA table_info(cobrancas_dominio);")}
-        except sqlite3.OperationalError:
-            cols_cob = set()
-        if cols_cob and "comissao" not in cols_cob:
-            try:
-                conn.execute(
-                    "ALTER TABLE cobrancas_dominio ADD COLUMN comissao REAL;"
-                )
-            except sqlite3.OperationalError:
-                pass'''
-    if OLD in db:
-        db = db.replace(OLD, NEW, 1)
+# 1. Migration — coluna comissao no banco existente
+if "comissao REAL" not in db and "comissao        REAL" not in db:
+    OLD_ANCHOR = "# DADOS MOCK PARA AS MATRIZES"
+    NEW_INJECT = """    # ── cobrancas_dominio.comissao — migração para bancos existentes ──
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "ALTER TABLE cobrancas_dominio ADD COLUMN comissao REAL;"
+            )
+    except sqlite3.OperationalError:
+        pass
+
+
+# DADOS MOCK PARA AS MATRIZES"""
+    if OLD_ANCHOR in db:
+        db = db.replace(OLD_ANCHOR, NEW_INJECT, 1)
         db_changed = True
-        print("DB: migration comissao adicionada")
+        print("DB: ALTER TABLE comissao adicionada ao init_db")
     else:
-        print("DB: AVISO — bloco migration não encontrado, pulando")
+        print("DB: AVISO — âncora DADOS MOCK não encontrada")
+
+# 1b. CREATE TABLE — adicionar coluna (para novos bancos)
+if "comissao        REAL" not in db:
+    OLD_CT = "        observacao      TEXT,\n        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE SET NULL,"
+    NEW_CT = "        observacao      TEXT,\n        comissao        REAL,\n        FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE SET NULL,"
+    if OLD_CT in db:
+        db = db.replace(OLD_CT, NEW_CT, 1)
+        db_changed = True
+        print("DB: CREATE TABLE cobrancas_dominio atualizado com comissao")
 
 # 2. marcar_cobranca_lancada — adicionar param comissao
 if "comissao: float | None = None" not in db:
@@ -192,7 +195,7 @@ if "comissao=comissao_val" not in app:
         print("APP: AVISO — chamada marcar_cobranca_lancada não encontrada")
 
 # 4. Tabs — adicionar 📊 Por Mês
-if '"📊 Por Mês"' not in app and '"\\U0001f4ca Por M\\u00eas"' not in app:
+if '"📊 Por Mês"' not in app:
     OLD = '''    tab_pend, tab_lanc, tab_val, tab_manual = st.tabs([
         f"📌 Pendentes ({qtd})",
         "✅ Lançadas",
@@ -256,7 +259,7 @@ if '"Comissão"' not in app:
         print("APP: AVISO — bloco dataframe Lançadas não encontrado")
 
 # 6. Tab Por Mês — nova tab após Lançadas
-if "tab_mes:" not in app and "with tab_mes:" not in app:
+if "with tab_mes:" not in app:
     OLD = "    # ============== TAB 3: Valores sugeridos =============="
     NEW = '''    # ============== TAB 3: Por Mês ==============
     with tab_mes:
@@ -309,7 +312,7 @@ if db_changed or app_changed:
     if app_changed:
         files.append("app.py")
     subprocess.run(["git", "add"] + files, check=True)
-    subprocess.run(["git", "commit", "-m", "feat: comissao + tab Por Mes em Cobranças DOMINIO"], check=True)
+    subprocess.run(["git", "commit", "-m", "fix: migration comissao REAL + CREATE TABLE atualizado"], check=True)
     subprocess.run(["git", "push", remote, "main"], check=True)
     print("GIT: push realizado ✓")
 else:
