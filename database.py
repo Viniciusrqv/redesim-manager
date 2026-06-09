@@ -551,6 +551,7 @@ DDL = [
         lancado_em      TEXT,
         lancado_por     TEXT,
         observacao      TEXT,
+        comissao        REAL,
         FOREIGN KEY(empresa_id) REFERENCES empresas(id) ON DELETE SET NULL,
         FOREIGN KEY(protocolo_id) REFERENCES protocolos_redesim(id) ON DELETE SET NULL
     );
@@ -881,6 +882,16 @@ def _migrar(conn: sqlite3.Connection) -> None:
 
 
 # =====================================================
+    # ── cobrancas_dominio.comissao — migração para bancos existentes ──
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "ALTER TABLE cobrancas_dominio ADD COLUMN comissao REAL;"
+            )
+    except sqlite3.OperationalError:
+        pass
+
+
 # DADOS MOCK PARA AS MATRIZES
 # =====================================================
 CNAE_RISCO_MOCK = [
