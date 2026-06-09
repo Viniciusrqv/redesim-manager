@@ -1,11 +1,8 @@
 name: Aplicar patch no app.py
-
 on:
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   patch:
     runs-on: ubuntu-latest
@@ -13,8 +10,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
       - name: Patch e atualiza via API
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python fix_sidebar_v2.py
+        run: python patch_comissao.py
