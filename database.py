@@ -4604,6 +4604,26 @@ def criar_cobranca_pendente(
         return cur.lastrowid
 
 
+def listar_cobrancas_por_mes() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                strftime('%m/%Y', lancado_em) AS mes,
+                strftime('%Y%m', lancado_em)  AS mes_sort,
+                COUNT(*)                       AS qtd,
+                COALESCE(SUM(valor_lancado), 0) AS total_lancado,
+                COALESCE(SUM(comissao), 0)      AS total_comissao
+            FROM cobrancas_dominio
+            WHERE status = 'lancada'
+              AND lancado_em IS NOT NULL
+            GROUP BY mes_sort
+            ORDER BY mes_sort DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def listar_cobrancas_pendentes(
     *, status: str | None = "pendente",
     responsavel: str | None = None,
@@ -4626,6 +4646,7 @@ def marcar_cobranca_lancada(
     *, valor_lancado: float | None = None,
     lancado_por: str | None = None,
     observacao: str | None = None,
+    comissao: float | None = None,
 ) -> None:
     with get_conn() as conn:
         conn.execute(
@@ -4634,9 +4655,10 @@ def marcar_cobranca_lancada(
                  valor_lancado = COALESCE(?, valor_sugerido),
                  lancado_em = datetime('now', 'localtime'),
                  lancado_por = ?,
-                 observacao = COALESCE(?, observacao)
+                 observacao = COALESCE(?, observacao),
+                 comissao = ?
                WHERE id = ?""",
-            (valor_lancado, lancado_por, observacao, cobranca_id),
+            (valor_lancado, lancado_por, observacao, comissao, cobranca_id),
         )
 
 

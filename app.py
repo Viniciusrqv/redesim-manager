@@ -8636,6 +8636,7 @@ def pagina_cobrancas_dominio():
         criar_cobranca_pendente,
         contar_cobrancas_pendentes,
         total_pendente_cobranca,
+        listar_cobrancas_por_mes,
         TIPO_COB_LICENCA_REDESIM, TIPO_COB_VISA,
         TIPO_COB_AVCB, TIPO_COB_OUTRO,
         VALORES_COBRANCA_PADRAO,
@@ -8665,9 +8666,10 @@ def pagina_cobrancas_dominio():
     else:
         st.markdown("---")
 
-    tab_pend, tab_lanc, tab_val, tab_manual = st.tabs([
+    tab_pend, tab_lanc, tab_mes, tab_val, tab_manual = st.tabs([
         f"📌 Pendentes ({qtd})",
         "✅ Lançadas",
+        "📊 Por Mês",
         "⚙️ Valores sugeridos",
         "➕ Criar manual",
     ])
@@ -8713,6 +8715,14 @@ def pagina_cobrancas_dominio():
                             step=10.0, format="%.2f",
                             key=f"cob_val_{cb['id']}",
                         )
+                        comissao_val = st.number_input(
+                            "Minha comissão (R$)",
+                            min_value=0.0,
+                            value=0.0,
+                            step=5.0, format="%.2f",
+                            key=f"cob_com_{cb['id']}",
+                            help="Quanto ficou pra você desse lançamento.",
+                        )
                         obs_lanc = st.text_input(
                             "Obs (opcional)",
                             key=f"cob_obs_{cb['id']}",
@@ -8731,6 +8741,7 @@ def pagina_cobrancas_dominio():
                                     valor_lancado=valor_real,
                                     lancado_por=quem,
                                     observacao=obs_lanc or None,
+                                    comissao=comissao_val if comissao_val > 0 else None,
                                 )
                                 st.toast("✅ Cobrança baixada!")
                                 st.rerun()
@@ -8759,21 +8770,41 @@ def pagina_cobrancas_dominio():
                 "Cliente": l.get("cliente_nome"),
                 "Tipo": l.get("tipo_servico"),
                 "Valor lançado": f"R$ {(l.get('valor_lancado') or 0):.2f}",
+                "Comissão": f"R$ {(l.get('comissao') or 0):.2f}",
                 "Lançada em": (l.get("lancado_em") or "")[:16],
                 "Por": l.get("lancado_por"),
                 "Obs": l.get("observacao") or "",
             } for l in lancadas])
             st.dataframe(df, use_container_width=True, hide_index=True)
-            total_lanc = sum(
-                float(l.get("valor_lancado") or 0) for l in lancadas
-            )
-            st.success(
-                f"💵 **Total já lançado:** "
-                f"R$ {total_lanc:,.2f}".replace(",","X").replace(".",",").replace("X",".")
-                + f" em {len(lancadas)} cobrança(s)"
-            )
+            total_lanc = sum(float(l.get("valor_lancado") or 0) for l in lancadas)
+            total_com  = sum(float(l.get("comissao") or 0) for l in lancadas)
+            def _brl(v): return f"R$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+            col_tl, col_tc = st.columns(2)
+            col_tl.success(f"💵 **Total lançado:** {_brl(total_lanc)} em {len(lancadas)} cobrança(s)")
+            col_tc.info(f"💰 **Minha comissão total:** {_brl(total_com)}")
 
-    # ============== TAB 3: Valores sugeridos ==============
+    # ============== TAB 3: Por Mês ==============
+    with tab_mes:
+        meses = listar_cobrancas_por_mes()
+        if not meses:
+            st.info("Nenhuma cobrança lançada ainda para mostrar por mês.")
+        else:
+            import pandas as _pd
+            df_mes = _pd.DataFrame([{
+                "Mês": m["mes"],
+                "Qtd": m["qtd"],
+                "Total lançado": f"R$ {m['total_lancado']:,.2f}".replace(",","X").replace(".",",").replace("X","."),
+                "Minha comissão": f"R$ {m['total_comissao']:,.2f}".replace(",","X").replace(".",",").replace("X","."),
+            } for m in meses])
+            st.dataframe(df_mes, use_container_width=True, hide_index=True)
+            grand_total  = sum(m["total_lancado"] for m in meses)
+            grand_comiss = sum(m["total_comissao"] for m in meses)
+            def _brl2(v): return f"R$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+            col_gt, col_gc = st.columns(2)
+            col_gt.success(f"💵 **Total geral:** {_brl2(grand_total)}")
+            col_gc.info(f"💰 **Comissão acumulada:** {_brl2(grand_comiss)}")
+
+    # ============== TAB 4: Valores sugeridos ==============
     with tab_val:
         st.markdown(
             "Configure os valores padrão usados quando o sistema cria "
