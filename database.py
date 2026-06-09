@@ -4616,23 +4616,50 @@ def criar_cobranca_pendente(
 
 
 def listar_cobrancas_por_mes() -> list[dict]:
+    """Agrupa cobranças lançadas por mês.
+
+    Agregação feita em Python para funcionar igual em SQLite (dev) e
+    PostgreSQL (prod), sem depender de strftime/to_char (dialeto-específicos).
+    """
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT
-                strftime('%m/%Y', lancado_em) AS mes,
-                strftime('%Y%m', lancado_em)  AS mes_sort,
-                COUNT(*)                       AS qtd,
-                COALESCE(SUM(valor_lancado), 0) AS total_lancado,
-                COALESCE(SUM(comissao), 0)      AS total_comissao
+            SELECT lancado_em, valor_lancado, comissao
             FROM cobrancas_dominio
             WHERE status = 'lancada'
               AND lancado_em IS NOT NULL
-            GROUP BY mes_sort
-            ORDER BY mes_sort DESC
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+
+    grupos: dict[str, dict] = {}
+    for r in rows:
+        d = dict(r)
+        le = d.get("lancado_em")
+        if le is None:
+            continue
+        if hasattr(le, "year") and hasattr(le, "month"):
+            ano, mes_num = le.year, le.month
+        else:
+            s = str(le)
+            ano, mes_num = int(s[0:4]), int(s[5:7])
+        mes_sort = f"{ano:04d}{mes_num:02d}"
+        g = grupos.setdefault(
+            mes_sort,
+            {
+                "mes": f"{mes_num:02d}/{ano:04d}",
+                "mes_sort": mes_sort,
+                "qtd": 0,
+                "total_lancado": 0.0,
+                "total_comissao": 0.0,
+            },
+        )
+        g["qtd"] += 1
+        g["total_lancado"] += float(d.get("valor_lancado") or 0)
+        g["total_comissao"] += float(d.get("comissao") or 0)
+
+    return sorted(
+        grupos.values(), key=lambda x: x["mes_sort"], reverse=True
+    )
 
 
 def listar_cobrancas_pendentes(
@@ -4670,6 +4697,14 @@ def marcar_cobranca_lancada(
                  comissao = ?
                WHERE id = ?""",
             (valor_lancado, lancado_por, observacao, comissao, cobranca_id),
+        )
+
+def atualizar_comissao(cobranca_id: int, comissao) -> None:
+    """Atualiza apenas a comissão de uma cobrança já lançada."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE cobrancas_dominio SET comissao = ? WHERE id = ?",
+            (comissao, cobranca_id),
         )
 
 
