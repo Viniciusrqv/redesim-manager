@@ -8637,6 +8637,7 @@ def pagina_cobrancas_dominio():
         contar_cobrancas_pendentes,
         total_pendente_cobranca,
         listar_cobrancas_por_mes,
+        atualizar_comissao,
         TIPO_COB_LICENCA_REDESIM, TIPO_COB_VISA,
         TIPO_COB_AVCB, TIPO_COB_OUTRO,
         VALORES_COBRANCA_PADRAO,
@@ -8782,6 +8783,34 @@ def pagina_cobrancas_dominio():
             col_tl, col_tc = st.columns(2)
             col_tl.success(f"💵 **Total lançado:** {_brl(total_lanc)} em {len(lancadas)} cobrança(s)")
             col_tc.info(f"💰 **Minha comissão total:** {_brl(total_com)}")
+            st.divider()
+            with st.expander("✏️ Editar comissão de uma cobrança"):
+                _opcoes = {
+                    f"{l.get('cliente_nome')} — {l.get('tipo_servico')} "
+                    f"(R$ {(l.get('comissao') or 0):.2f}) [id {l['id']}]": l
+                    for l in lancadas
+                }
+                _sel = st.selectbox(
+                    "Cobrança lançada",
+                    list(_opcoes.keys()),
+                    key="edit_com_sel",
+                )
+                if _sel:
+                    _cb = _opcoes[_sel]
+                    _novo = st.number_input(
+                        "Nova comissão (R$)",
+                        min_value=0.0,
+                        value=float(_cb.get("comissao") or 0),
+                        step=10.0,
+                        format="%.2f",
+                        key="edit_com_val",
+                    )
+                    if st.button("💾 Salvar comissão", key="edit_com_save"):
+                        atualizar_comissao(
+                            _cb["id"], _novo if _novo > 0 else None
+                        )
+                        st.toast("✅ Comissão atualizada!")
+                        st.rerun()
 
     # ============== TAB 3: Por Mês ==============
     with tab_mes:
