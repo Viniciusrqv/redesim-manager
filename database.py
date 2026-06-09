@@ -735,7 +735,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
     if "risco_sanitario" not in cols_vig:
         try:
             conn.execute("ALTER TABLE vigilancia_sanitaria ADD COLUMN risco_sanitario TEXT;")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     # cnae_risco.grau_risco e cnae_risco.fonte (NR-04)
@@ -743,12 +743,12 @@ def _migrar(conn: sqlite3.Connection) -> None:
     if "grau_risco" not in cols_risco:
         try:
             conn.execute("ALTER TABLE cnae_risco ADD COLUMN grau_risco INTEGER;")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
     if "fonte" not in cols_risco:
         try:
             conn.execute("ALTER TABLE cnae_risco ADD COLUMN fonte TEXT;")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     # processos.canal_redesim (Online / Presencial / Hibrido)
@@ -756,44 +756,44 @@ def _migrar(conn: sqlite3.Connection) -> None:
     if "canal_redesim" not in cols_proc:
         try:
             conn.execute("ALTER TABLE processos ADD COLUMN canal_redesim TEXT DEFAULT 'Online';")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
     if "motivo_presencial" not in cols_proc:
         try:
             conn.execute("ALTER TABLE processos ADD COLUMN motivo_presencial TEXT;")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     # protocolos_redesim.substituido_por_id (rastreio de substituições)
     try:
         cols_pr = {r["name"] for r in conn.execute("PRAGMA table_info(protocolos_redesim);")}
-    except sqlite3.OperationalError:
+    except Exception:
         cols_pr = set()
     if cols_pr and "substituido_por_id" not in cols_pr:
         try:
             conn.execute(
                 "ALTER TABLE protocolos_redesim ADD COLUMN substituido_por_id INTEGER;"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     # cnae_conselho — adiciona tipo_registro em bancos antigos
     try:
         cols_conselho = {r["name"] for r in conn.execute("PRAGMA table_info(cnae_conselho);")}
-    except sqlite3.OperationalError:
+    except Exception:
         cols_conselho = set()
     if cols_conselho and "tipo_registro" not in cols_conselho:
         try:
             conn.execute(
                 "ALTER TABLE cnae_conselho ADD COLUMN tipo_registro TEXT;"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     # tarefas_gestta — campos vindos da API REST (gestta_id, due_date, etc.)
     try:
         cols_g = {r["name"] for r in conn.execute("PRAGMA table_info(tarefas_gestta);")}
-    except sqlite3.OperationalError:
+    except Exception:
         cols_g = set()
     if cols_g:
         novas_g = [
@@ -816,7 +816,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
             if col not in cols_g:
                 try:
                     conn.execute(f"ALTER TABLE tarefas_gestta ADD COLUMN {col} {tipo};")
-                except sqlite3.OperationalError:
+                except Exception:
                     pass
 
     # pendencias.cliente_avulso (serviço avulso sem empresa cadastrada)
@@ -824,14 +824,14 @@ def _migrar(conn: sqlite3.Connection) -> None:
     # SQLite não permite alterar NOT NULL via ALTER COLUMN).
     try:
         cols_pend = {r["name"] for r in conn.execute("PRAGMA table_info(pendencias);")}
-    except sqlite3.OperationalError:
+    except Exception:
         cols_pend = set()
     if cols_pend and "cliente_avulso" not in cols_pend:
         try:
             conn.execute(
                 "ALTER TABLE pendencias ADD COLUMN cliente_avulso TEXT;"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass
     # Recria tabela com empresa_id NULLABLE — só executa se ainda
     # estiver com NOT NULL.
@@ -877,7 +877,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
                     COMMIT;
                     PRAGMA foreign_keys=on;
                 """)
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
 
 
@@ -888,7 +888,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE cobrancas_dominio ADD COLUMN comissao REAL;"
             )
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
 
