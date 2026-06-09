@@ -8,7 +8,7 @@ import sys
 # ═══════════════════════════════════════════════════════
 # DATABASE.PY
 # ═══════════════════════════════════════════════════════
-with open("redesim_manager/database.py", "r", encoding="utf-8") as f:
+with open("database.py", "r", encoding="utf-8") as f:
     db = f.read()
 
 db_changed = False
@@ -117,7 +117,7 @@ if "listar_cobrancas_por_mes" not in db:
         print("DB: AVISO — âncora listar_cobrancas_pendentes não encontrada, pulando")
 
 if db_changed:
-    with open("redesim_manager/database.py", "w", encoding="utf-8") as f:
+    with open("database.py", "w", encoding="utf-8") as f:
         f.write(db)
     print("DB: database.py salvo ✓")
 else:
@@ -126,7 +126,7 @@ else:
 # ═══════════════════════════════════════════════════════
 # APP.PY
 # ═══════════════════════════════════════════════════════
-with open("redesim_manager/app.py", "r", encoding="utf-8") as f:
+with open("app.py", "r", encoding="utf-8") as f:
     app = f.read()
 
 app_changed = False
@@ -288,7 +288,7 @@ if "tab_mes:" not in app and "with tab_mes:" not in app:
         print("APP: AVISO — âncora TAB 3 não encontrada")
 
 if app_changed:
-    with open("redesim_manager/app.py", "w", encoding="utf-8") as f:
+    with open("app.py", "w", encoding="utf-8") as f:
         f.write(app)
     print("APP: app.py salvo ✓")
 else:
@@ -305,9 +305,9 @@ if db_changed or app_changed:
     subprocess.run(["git", "config", "user.name", "CSM Bot"], check=True)
     files = []
     if db_changed:
-        files.append("redesim_manager/database.py")
+        files.append("database.py")
     if app_changed:
-        files.append("redesim_manager/app.py")
+        files.append("app.py")
     subprocess.run(["git", "add"] + files, check=True)
     subprocess.run(["git", "commit", "-m", "feat: comissao + tab Por Mes em Cobranças DOMINIO"], check=True)
     subprocess.run(["git", "push", remote, "main"], check=True)
