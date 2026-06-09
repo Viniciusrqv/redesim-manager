@@ -4699,6 +4699,7 @@ def marcar_cobranca_lancada(
             (valor_lancado, lancado_por, observacao, comissao, cobranca_id),
         )
 
+
 def atualizar_comissao(cobranca_id: int, comissao) -> None:
     """Atualiza apenas a comissão de uma cobrança já lançada."""
     with get_conn() as conn:
