@@ -816,6 +816,9 @@ def init_db() -> None:
         _migrar_postgres()
 
 
+# ATENCAO: este _migrar() so roda no SQLite (dev). Toda coluna nova
+# adicionada aqui PRECISA entrar tambem em _migrar_postgres() acima,
+# senao a coluna nao e criada no Postgres (producao) e some.
 def _migrar(conn: sqlite3.Connection) -> None:
     """Adiciona colunas novas em bancos criados antes das mudanças."""
     # vigilancia_sanitaria.risco_sanitario
