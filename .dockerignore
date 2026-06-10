@@ -1,0 +1,11 @@
+.git
+.github
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.db
+data/*.db
+*.md
+.streamlit/secrets.toml
