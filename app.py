@@ -6943,6 +6943,34 @@ def _render_relatorio_empresa(rel: dict):
     )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cnae_subclasses_cache():
+    """Todas as subclasses CNAE (codigo + denominacao) para busca por texto. Cacheado."""
+    from database import get_conn
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT codigo, denominacao FROM cnae_concla WHERE nivel = 'subclasse'"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _buscar_cnae_por_texto(texto, limite=40):
+    """Busca subclasses CNAE cuja denominacao oficial contem os termos.
+    Sem acento/maiuscula, ranqueado por nº de termos batidos. Sem IA."""
+    from unidecode import unidecode
+    termos = [unidecode(t).lower() for t in str(texto).split() if len(t) >= 3]
+    if not termos:
+        return []
+    out = []
+    for r in _cnae_subclasses_cache():
+        deno = unidecode(str(r.get("denominacao", ""))).lower()
+        hits = sum(1 for t in termos if t in deno)
+        if hits:
+            out.append((hits, r))
+    out.sort(key=lambda x: (-x[0], x[1].get("codigo", "")))
+    return [r for _, r in out[:limite]]
+
+
 def pagina_consulta_cnae():
     st.header("🔬 Consultor de CNAE")
     st.caption(
@@ -6955,6 +6983,30 @@ def pagina_consulta_cnae():
     # =====================================================
     # Wizard: CNAE individual primeiro (consulta rápida do dia-a-dia)
     # =====================================================
+    with st.expander("🔎 Não sei o CNAE? Descreva a atividade da empresa"):
+        _termo_busca = st.text_input(
+            "Descreva o que a empresa vai fazer",
+            placeholder="ex.: lanchonete, venda de sucos e salgados",
+            key="busca_cnae_atividade",
+        )
+        if _termo_busca and len(_termo_busca.strip()) >= 3:
+            _achados = _buscar_cnae_por_texto(_termo_busca)
+            if not _achados:
+                st.info("Nenhum CNAE encontrado com esses termos. Tente outras palavras.")
+            else:
+                import pandas as _pd
+                st.caption(
+                    f"{len(_achados)} CNAE(s) encontrados — confira a denominação "
+                    "oficial e use o código na aba 'CNAE individual'."
+                )
+                st.dataframe(
+                    _pd.DataFrame([
+                        {"CNAE": a.get("codigo"), "Denominação oficial": a.get("denominacao")}
+                        for a in _achados
+                    ]),
+                    hide_index=True, width="stretch",
+                )
+
     tab_cnae, tab_cnpj, tab_nova = st.tabs([
         "🔬 CNAE individual",
         "🔎 Empresa existente (CNPJ)",
