@@ -533,6 +533,7 @@ PAGINAS_LIST = [
     "📄 Documentos",
     "🏢 Empresas / REDESIM",
     "📋 Tarefas GESTTA",
+    "📋 Licenças / Renovações",
     "📌 Pendências Gerais",
     "💰 Cobranças DOMÍNIO",
     "🔬 Consultor de CNAE",
@@ -9373,6 +9374,62 @@ def pagina_fila_do_dia():
         pass
 
 
+def pagina_renovacoes_licencas():
+    st.header("📋 Licenças / Renovações")
+    st.caption(
+        "Tarefas do GESTTA com 'licença' no nome — vencidas e a vencer, por cliente. "
+        "Só leitura: trabalhe a tarefa e atualize no GESTTA."
+    )
+    from database import listar_tarefas_gestta
+    from unidecode import unidecode
+    import pandas as _pd
+
+    try:
+        _tarefas = listar_tarefas_gestta(apenas_pendentes=True)
+    except Exception as _e:
+        st.warning(f"Não consegui carregar tarefas do GESTTA: {_e}")
+        return
+
+    _lic = [
+        t for t in _tarefas
+        if "licenc" in unidecode(str(t.get("tarefa_nome", ""))).lower()
+    ]
+    if not _lic:
+        st.info("Nenhuma tarefa de licença pendente. (Sincronize o GESTTA se faltar algo.)")
+        return
+
+    def _venc(t):
+        return (
+            str(t.get("overdue")) in ("1", "True")
+            or str(t.get("atrasada", "")).strip().lower() in ("sim", "1", "true")
+        )
+
+    def _row(t):
+        return {
+            "Cliente": t.get("cliente_nome"),
+            "Tarefa": t.get("tarefa_nome"),
+            "Vencimento": (str(t.get("due_date") or ""))[:10],
+            "Responsável": t.get("responsavel"),
+            "Status": t.get("status_gestta"),
+            "Progresso": f"{t.get('done_step') or 0}/{t.get('total_step') or 0}",
+        }
+
+    _vencidas = sorted([t for t in _lic if _venc(t)], key=lambda t: (str(t.get("due_date") or "")))
+    _avencer = sorted([t for t in _lic if not _venc(t)], key=lambda t: (str(t.get("due_date") or "")))
+
+    st.subheader(f"🔴 Vencidas / atrasadas ({len(_vencidas)})")
+    if _vencidas:
+        st.dataframe(_pd.DataFrame([_row(t) for t in _vencidas]), hide_index=True, width="stretch")
+    else:
+        st.caption("Nenhuma vencida. 👍")
+
+    st.subheader(f"🟠 A vencer / em aberto ({len(_avencer)})")
+    if _avencer:
+        st.dataframe(_pd.DataFrame([_row(t) for t in _avencer]), hide_index=True, width="stretch")
+    else:
+        st.caption("Nada em aberto.")
+
+
 PAGINAS = {
     "📊 Dashboard/Kanban": pagina_dashboard,
     "📋 Fila do dia": pagina_fila_do_dia,
@@ -9380,6 +9437,7 @@ PAGINAS = {
     "📄 Documentos": pagina_documentos_vencimento,
     "🏢 Empresas / REDESIM": pagina_empresas_redesim,
     "📋 Tarefas GESTTA": pagina_tarefas_gestta,
+    "📋 Licenças / Renovações": pagina_renovacoes_licencas,
     "📌 Pendências Gerais": pagina_pendencias,
     "🔬 Consultor de CNAE": pagina_consulta_cnae,
     "📋 Fila de Renovação": pagina_fila_renovacao,
