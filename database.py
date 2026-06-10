@@ -744,14 +744,18 @@ def _migrar_postgres() -> None:
         ("tarefas_gestta", "done_overdue INTEGER"),
         ("tarefas_gestta", "done_fine INTEGER"),
     ]
+    _ok, _fail = [], []
     for _tab, _coldef in _cols:
+        _col = _coldef.split()[0]
         try:
             with get_conn() as conn:
                 conn.execute(
                     f"ALTER TABLE {_tab} ADD COLUMN IF NOT EXISTS {_coldef}"
                 )
-        except Exception:
-            pass
+            _ok.append(_col)
+        except Exception as _e:
+            _fail.append(f"{_tab}.{_col}: {_e}")
+    print(f"[_migrar_postgres] ok={_ok} fail={_fail}", flush=True)
 
 
 def init_db() -> None:
