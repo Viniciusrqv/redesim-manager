@@ -1377,6 +1377,7 @@ _NR04_FALLBACK_POR_DIVISAO = {
 }
 
 
+@cache_read(ttl=1800)
 def buscar_risco_cnae(cnae):
     """Busca grau NR-04 do CNAE. Se não tiver cadastrado especificamente,
     usa fallback por DIVISÃO CNAE e marca `_inferido_por_divisao = True`.
@@ -1424,6 +1425,7 @@ def buscar_risco_cnae(cnae):
         return None
 
 
+@cache_read(ttl=1800)
 def buscar_vigilancia(cnae):
     with get_conn() as conn:
         r = conn.execute(
@@ -1432,6 +1434,7 @@ def buscar_vigilancia(cnae):
         return dict(r) if r else None
 
 
+@invalidates_cache
 def upsert_cnae_risco(cnae, descricao, risco, observacoes=None,
                       grau_risco=None, fonte=None):
     with get_conn() as conn:
@@ -1450,6 +1453,7 @@ def upsert_cnae_risco(cnae, descricao, risco, observacoes=None,
         )
 
 
+@invalidates_cache
 def importar_cnae_risco_em_massa(registros: list[dict]) -> dict:
     """
     Importa múltiplos CNAEs de uma vez (usado pela NR-04 e CGSIM 51).
@@ -1488,6 +1492,7 @@ def importar_cnae_risco_em_massa(registros: list[dict]) -> dict:
             "total": inseridos + atualizados}
 
 
+@invalidates_cache
 def upsert_vigilancia(cnae, descricao, exige_licenca, nivel=None, fonte=None,
                       risco_sanitario=None):
     with get_conn() as conn:
@@ -1506,12 +1511,14 @@ def upsert_vigilancia(cnae, descricao, exige_licenca, nivel=None, fonte=None,
         )
 
 
+@invalidates_cache
 def excluir_vigilancia(cnae):
     """Remove um CNAE da tabela de vigilância sanitária."""
     with get_conn() as conn:
         conn.execute("DELETE FROM vigilancia_sanitaria WHERE cnae = ?", (cnae,))
 
 
+@invalidates_cache
 def excluir_varios_vigilancia(cnaes):
     """Remove vários CNAEs de uma vez."""
     if not cnaes:
@@ -1528,6 +1535,7 @@ def excluir_varios_vigilancia(cnaes):
 # =====================================================
 # BOMBEIROS — Classificador técnico por CNAE (IT-01)
 # =====================================================
+@cache_read(ttl=1800)
 def buscar_bombeiros_cnae(cnae):
     """Busca um CNAE na tabela de classificação de Bombeiros.
 
@@ -1550,6 +1558,7 @@ def buscar_bombeiros_cnae(cnae):
         return dict(r) if r else None
 
 
+@cache_read(ttl=1800)
 def listar_bombeiros_cnae():
     """Retorna todos os registros da classificação CNAE → Bombeiros."""
     with get_conn() as conn:
@@ -1561,6 +1570,7 @@ def listar_bombeiros_cnae():
         ]
 
 
+@invalidates_cache
 def upsert_bombeiros_cnae(
     cnae,
     descricao=None,
@@ -1600,12 +1610,14 @@ def upsert_bombeiros_cnae(
         )
 
 
+@invalidates_cache
 def excluir_bombeiros_cnae(cnae):
     """Remove um CNAE da tabela de classificação de Bombeiros."""
     with get_conn() as conn:
         conn.execute("DELETE FROM bombeiros_cnae WHERE cnae = ?", (cnae,))
 
 
+@invalidates_cache
 def excluir_varios_bombeiros_cnae(cnaes):
     """Remove vários CNAEs de Bombeiros de uma vez."""
     if not cnaes:
@@ -2307,6 +2319,7 @@ def importar_cnae_concla(registros: list[dict]) -> dict:
             "total": inseridos + atualizados}
 
 
+@cache_read(ttl=1800)
 def buscar_cnae_concla(codigo: str) -> dict | None:
     """Retorna o registro CONCLA (qualquer nível) ou None."""
     if not codigo:
@@ -2319,6 +2332,7 @@ def buscar_cnae_concla(codigo: str) -> dict | None:
         return dict(r) if r else None
 
 
+@cache_read(ttl=1800)
 def contar_cnae_concla() -> dict:
     """Retorna contagem por nível (secao, divisao, grupo, classe, subclasse)."""
     with get_conn() as conn:
@@ -2368,6 +2382,7 @@ def importar_cgsim_cnae(registros: list[dict]) -> dict:
             "total": inseridos + atualizados}
 
 
+@cache_read(ttl=1800)
 def buscar_cgsim_cnae(codigo: str) -> dict | None:
     if not codigo:
         return None
@@ -2379,6 +2394,7 @@ def buscar_cgsim_cnae(codigo: str) -> dict | None:
         return dict(r) if r else None
 
 
+@cache_read(ttl=1800)
 def contar_cgsim_cnae() -> int:
     with get_conn() as conn:
         r = conn.execute("SELECT COUNT(*) AS n FROM cgsim_cnae").fetchone()
@@ -3682,6 +3698,7 @@ def upsert_cnae_outro_registro(
         conn.commit()
 
 
+@cache_read(ttl=1800)
 def listar_outros_registros_cnae(cnae: str) -> list[dict]:
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
@@ -3750,6 +3767,7 @@ def upsert_cnae_habilitacao_profissional(
         conn.commit()
 
 
+@cache_read(ttl=1800)
 def listar_habilitacoes_cnae(cnae: str) -> list[dict]:
     """Retorna lista de atividades CONDICIONAIS que exigem profissional
     habilitado para este CNAE.
@@ -4133,6 +4151,7 @@ def upsert_orgao_oficial(
             )
 
 
+@cache_read(ttl=1800)
 def buscar_orgao(sigla: str, uf: str | None = None) -> dict | None:
     sigla = (sigla or "").strip().upper()
     uf_norm = (uf or "").strip().upper() or None
@@ -4241,6 +4260,7 @@ def upsert_regra_oficial(
             )
 
 
+@cache_read(ttl=1800)
 def buscar_regras_cnae(cnae: str) -> list[dict]:
     """Lista todas as regras oficiais cadastradas pra um CNAE."""
     cnae_norm = _normalizar_cnae(cnae)
@@ -4255,6 +4275,7 @@ def buscar_regras_cnae(cnae: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+@cache_read(ttl=1800)
 def buscar_regra_especifica(
     cnae: str, orgao_sigla: str,
     *, orgao_uf: str | None = None,
