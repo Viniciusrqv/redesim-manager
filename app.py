@@ -595,7 +595,7 @@ st.sidebar.caption(
 
 # Botão de recarregar — útil após atualização do código
 st.sidebar.markdown("---")
-if st.sidebar.button("🔄 Recarregar app", use_container_width=True,
+if st.sidebar.button("🔄 Recarregar app", width="stretch",
                      help="Aperte aqui depois de qualquer atualização do "
                           "Claude. Limpa cache e recarrega a tela."):
     try:
@@ -873,7 +873,7 @@ def _resumo_consolidado_dashboard():
             sub_txt = alt.Chart(pd.DataFrame({"v": ["itens abertos"]})).mark_text(
                 fontSize=14, fontWeight="bold", color="#000000", dy=28,
             ).encode(text="v:N")
-            st.altair_chart(donut + total_txt + sub_txt, use_container_width=True)
+            st.altair_chart(donut + total_txt + sub_txt, width="stretch")
         else:
             st.info("Sem itens abertos.")
 
@@ -931,7 +931,7 @@ def _resumo_consolidado_dashboard():
             )
             .properties(height=320)
         )
-        st.altair_chart(bar, use_container_width=True)
+        st.altair_chart(bar, width="stretch")
 
 
 def _bloco_pendencias_dashboard():
@@ -1026,7 +1026,7 @@ def _bloco_pendencias_dashboard():
                 ),
             } for p in filtradas])
             sel = st.dataframe(
-                df_p, use_container_width=True, hide_index=True,
+                df_p, width="stretch", hide_index=True,
                 on_select="rerun", selection_mode="single-row",
                 key="pend_dash_df",
             )
@@ -1048,7 +1048,7 @@ def _bloco_pendencias_dashboard():
                     with a2:
                         if st.button("💬 Adicionar nota",
                                      key=f"pend_dash_addnota_{p_sel['id']}",
-                                     use_container_width=True):
+                                     width="stretch"):
                             if nota.strip():
                                 adicionar_movimento_pendencia(
                                     p_sel["id"], nota, tipo="nota",
@@ -1060,7 +1060,7 @@ def _bloco_pendencias_dashboard():
                     with a3:
                         if st.button("✅ Resolver",
                                      key=f"pend_dash_resolv_{p_sel['id']}",
-                                     use_container_width=True,
+                                     width="stretch",
                                      type="primary"):
                             resolver_pendencia(p_sel["id"])
                             st.toast("Pendência resolvida — saiu do dashboard.")
@@ -1068,7 +1068,7 @@ def _bloco_pendencias_dashboard():
                     with a4:
                         if st.button("🗑 Excluir",
                                      key=f"pend_dash_del_{p_sel['id']}",
-                                     use_container_width=True):
+                                     width="stretch"):
                             excluir_pendencia(p_sel["id"])
                             st.toast("Pendência excluída.")
                             st.rerun()
@@ -1076,7 +1076,7 @@ def _bloco_pendencias_dashboard():
                     if st.button(
                         "📂 Abrir essa pendência na página completa →",
                         key=f"pend_dash_navigate_{p_sel['id']}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _navegar_para(
                             "📌 Pendências Gerais",
@@ -1178,7 +1178,7 @@ def _bloco_protocolos_redesim_dashboard():
                         if st.button(
                             "▶️ Iniciar Licenciamento",
                             key=f"ini_lic_{p['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary",
                         ):
                             lic_dup = next((x for x in todos if x["tipo"] == TIPO_PROTOCOLO_LICENCIAMENTO and x["numero_protocolo"] == p["numero_protocolo"]), None)
@@ -1207,7 +1207,7 @@ def _bloco_protocolos_redesim_dashboard():
                             if st.button(
                                 "✅ Deferida",
                                 key=f"def_{p['id']}",
-                                use_container_width=True,
+                                width="stretch",
                                 type="primary",
                             ):
                                 _, info_g = atualizar_status_protocolo_com_gestta(
@@ -1229,7 +1229,7 @@ def _bloco_protocolos_redesim_dashboard():
                                 if st.button(
                                     "❌ Indeferida",
                                     key=f"ind_{p['id']}",
-                                    use_container_width=True,
+                                    width="stretch",
                                 ):
                                     st.session_state[_k_recon] = True
                                     st.rerun()
@@ -1238,7 +1238,7 @@ def _bloco_protocolos_redesim_dashboard():
                                 st.caption("Motivo: análise automática VRE/JUCESP — atividade Não Passível no endereço.")
                                 _r1c, _r2c = st.columns(2)
                                 with _r1c:
-                                    if st.button("📧 Solicitar Reconsideração", key=f"send_rc_{p['id']}", use_container_width=True, type="primary"):
+                                    if st.button("📧 Solicitar Reconsideração", key=f"send_rc_{p['id']}", width="stretch", type="primary"):
                                         import urllib.parse as _up
                                         _em = "diretrizes.shdu@cotia.sp.gov.br"
                                         _pr = p["numero_protocolo"]
@@ -1262,14 +1262,14 @@ def _bloco_protocolos_redesim_dashboard():
                                         _invalidar_cache_db()
                                         import time as _t; _t.sleep(1.0); st.rerun()
                                 with _r2c:
-                                    if st.button("← Cancelar", key=f"cancel_rc_{p['id']}", use_container_width=True):
+                                    if st.button("← Cancelar", key=f"cancel_rc_{p['id']}", width="stretch"):
                                         st.session_state.pop(_k_recon, None)
                                         st.rerun()
                         with b3:
                             if st.button(
                                 "🚫 Cancelar",
                                 key=f"can_{p['id']}",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 _, info_g = atualizar_status_protocolo_com_gestta(
                                     p["id"], "Cancelada",
@@ -1304,7 +1304,7 @@ def _bloco_protocolos_redesim_dashboard():
                     _pr2 = p["numero_protocolo"]
                     _s2 = _up2.quote(f"Solicitacao de Nova Analise - Protocolo {_pr2}")
                     _b2 = _up2.quote(f"Prezados,\n\nSolicito nova analise do protocolo {_pr2} que consta como Viabilidade Nao Aprovada.\n\nAguardo retorno.")
-                    st.link_button("📧 Abrir e-mail no Outlook", f"mailto:{_em2}?subject={_s2}&body={_b2}", use_container_width=True)
+                    st.link_button("📧 Abrir e-mail no Outlook", f"mailto:{_em2}?subject={_s2}&body={_b2}", width="stretch")
                     st.caption("Clique para abrir o Outlook com e-mail pré-preenchido para a Prefeitura de Cotia. Depois de enviar, informe o novo protocolo abaixo.")
                     _new_proto = st.text_input(
                         "Novo protocolo recebido",
@@ -1312,7 +1312,7 @@ def _bloco_protocolos_redesim_dashboard():
                         key=f"new_proto_num_{p['id']}",
                         label_visibility="collapsed",
                     )
-                    if st.button("✅ Registrar novo protocolo e retomar fluxo", key=f"new_proto_{p['id']}", use_container_width=True, type="primary", disabled=not _new_proto.strip()):
+                    if st.button("✅ Registrar novo protocolo e retomar fluxo", key=f"new_proto_{p['id']}", width="stretch", type="primary", disabled=not _new_proto.strip()):
                         if _new_proto.strip():
                             _obs_nova = (
                                 f"Reconsideração aprovada pela Prefeitura.\n"
@@ -1365,7 +1365,7 @@ def _bloco_protocolos_redesim_dashboard():
                         if st.button(
                             "✅ CLI Emitido",
                             key=f"cli_{p['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary",
                         ):
                             _, info_g = atualizar_status_protocolo_com_gestta(
@@ -1385,7 +1385,7 @@ def _bloco_protocolos_redesim_dashboard():
                         if st.button(
                             "❌ Indeferida",
                             key=f"lic_ind_{p['id']}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             _, info_g = atualizar_status_protocolo_com_gestta(
                                 p["id"], "Indeferida",
@@ -1494,7 +1494,7 @@ def _bloco_documentos_dashboard():
                 ),
             } for d in filtrados]
             sel = st.dataframe(
-                pd.DataFrame(linhas), use_container_width=True, hide_index=True,
+                pd.DataFrame(linhas), width="stretch", hide_index=True,
                 on_select="rerun", selection_mode="single-row",
                 key="doc_dash_df",
             )
@@ -1518,7 +1518,7 @@ def _bloco_documentos_dashboard():
                         if st.button(
                             "🔄 Renovar (cria novo)",
                             key=f"doc_dash_renovbt_{d_sel['id']}",
-                            use_container_width=True, type="primary",
+                            width="stretch", type="primary",
                         ):
                             renovar_documento(
                                 d_sel["id"],
@@ -1530,7 +1530,7 @@ def _bloco_documentos_dashboard():
                         if st.button(
                             "🗑 Excluir",
                             key=f"doc_dash_del_{d_sel['id']}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             excluir_documento_vencimento(d_sel["id"])
                             st.toast("Documento excluído.")
@@ -1539,7 +1539,7 @@ def _bloco_documentos_dashboard():
                     if st.button(
                         "📂 Abrir esse documento em Documentos →",
                         key=f"doc_dash_navigate_{d_sel['id']}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _navegar_para(
                             "📄 Documentos",
@@ -1639,7 +1639,7 @@ def _bloco_avcb_dashboard():
                 ),
             } for a in filtrados]
             sel = st.dataframe(
-                pd.DataFrame(linhas), use_container_width=True, hide_index=True,
+                pd.DataFrame(linhas), width="stretch", hide_index=True,
                 on_select="rerun", selection_mode="single-row",
                 key="avcb_dash_df",
             )
@@ -1658,7 +1658,7 @@ def _bloco_avcb_dashboard():
                         if st.button(
                             "🗑 Excluir AVCB",
                             key=f"avcb_dash_del_{a_sel['id']}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             excluir_alvara_bombeiros(a_sel["id"])
                             st.toast("Alvará excluído.")
@@ -1667,7 +1667,7 @@ def _bloco_avcb_dashboard():
                         if st.button(
                             "📂 Abrir em Documentos → Bombeiros →",
                             key=f"avcb_dash_navigate_{a_sel['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary",
                         ):
                             _navegar_para(
@@ -1766,7 +1766,7 @@ def _bloco_gestta_dashboard():
                 "Protocolo": t["protocolo_numero"] or "—",
             } for t in filtradas]
             sel = st.dataframe(
-                pd.DataFrame(linhas), use_container_width=True, hide_index=True,
+                pd.DataFrame(linhas), width="stretch", hide_index=True,
                 on_select="rerun", selection_mode="single-row",
                 key="gestta_dash_df",
             )
@@ -1784,7 +1784,7 @@ def _bloco_gestta_dashboard():
                         if st.button(
                             "✅ Marcar como resolvida",
                             key=f"gestta_dash_res_{t_sel['id']}",
-                            use_container_width=True, type="primary",
+                            width="stretch", type="primary",
                         ):
                             marcar_tarefa_resolvida(t_sel["id"], True)
                             st.toast("Tarefa GESTTA resolvida.")
@@ -1793,7 +1793,7 @@ def _bloco_gestta_dashboard():
                         if st.button(
                             "🗑 Excluir",
                             key=f"gestta_dash_del_{t_sel['id']}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             excluir_tarefa_gestta(t_sel["id"])
                             st.toast("Tarefa GESTTA excluída.")
@@ -1802,7 +1802,7 @@ def _bloco_gestta_dashboard():
                     if st.button(
                         "📂 Abrir essa tarefa em Tarefas GESTTA →",
                         key=f"gestta_dash_navigate_{t_sel['id']}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _navegar_para(
                             "📋 Tarefas GESTTA",
@@ -1826,7 +1826,7 @@ def pagina_dashboard():
     # Botão de sync manual GESTTA
     _sc1, _sc2, _sc3 = st.columns([6, 2, 2])
     with _sc2:
-        if st.button("🔄 Sync GESTTA", use_container_width=True, help="Atualiza tarefas do GESTTA agora (sincroniza status e novas tarefas)"):
+        if st.button("🔄 Sync GESTTA", width="stretch", help="Atualiza tarefas do GESTTA agora (sincroniza status e novas tarefas)"):
             with st.spinner("Sincronizando com GESTTA..."):
                 try:
                     from scheduler import sincronizar_tarefas_gestta
@@ -1837,7 +1837,7 @@ def pagina_dashboard():
                 except Exception as _e:
                     st.error(f"Erro ao sincronizar: {_e}")
     with _sc3:
-        if st.button("⟳ Recarregar", use_container_width=True, help="Recarrega os dados do dashboard"):
+        if st.button("⟳ Recarregar", width="stretch", help="Recarrega os dados do dashboard"):
             _invalidar_cache_db()
             st.rerun()
 
@@ -2047,7 +2047,7 @@ def pagina_novo_processo():
             else:
                 consol = consolidar(cnaes_det)
                 df_cnaes = pd.DataFrame(consol["detalhes"])
-                st.dataframe(df_cnaes, use_container_width=True, hide_index=True)
+                st.dataframe(df_cnaes, width="stretch", hide_index=True)
 
                 # 🚨 Banner de Risco ALTO por Vigilância Sanitária
                 if consol["exige_sanitaria"]:
@@ -2544,7 +2544,7 @@ def pagina_classificador():
             avcb_label = f"SIM · {consol.get('grau_avcb') or '—'}"
         col3.metric("Exige AVCB/CLCB?", avcb_label)
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------
@@ -2623,7 +2623,7 @@ def pagina_vigilancia():
 
                 st.dataframe(df_preview[["cnae", "descricao",
                                           "risco_sanitario", "exige_licenca"]],
-                             use_container_width=True, hide_index=True)
+                             width="stretch", hide_index=True)
 
                 if st.button("💾 Importar para o banco", type="primary",
                              key="btn_imp_pdf"):
@@ -2783,7 +2783,7 @@ def pagina_vigilancia():
 
             edited = st.data_editor(
                 df_edit,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 num_rows="fixed",
                 key="vis_editor",
@@ -2968,7 +2968,7 @@ def pagina_matriz_risco():
                     c4.metric("GR 4 (Alto)", dist.get(4, 0))
                     # Preview
                     df_preview = pd.DataFrame(dados).head(20)
-                    st.dataframe(df_preview, use_container_width=True)
+                    st.dataframe(df_preview, width="stretch")
                     if st.button("💾 Importar para a matriz de risco",
                                  type="primary", key="btn_imp_nr04"):
                         res = importar_cnae_risco_em_massa(dados)
@@ -3063,7 +3063,7 @@ def pagina_matriz_risco():
                 df = df[df.apply(lambda r: busca.lower() in str(r).lower(),
                                   axis=1)]
             st.caption(f"Total: **{len(df)}** CNAEs cadastrados")
-            st.dataframe(df, use_container_width=True, height=500)
+            st.dataframe(df, width="stretch", height=500)
 
 
 # ---------------------------------------------------------
@@ -3237,7 +3237,7 @@ def pagina_bombeiros():
             df_edit = df_edit[cols_edit]
             edited = st.data_editor(
                 df_edit,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 num_rows="fixed",
                 column_config={
@@ -3409,7 +3409,7 @@ def pagina_lembretes():
         )
         st.dataframe(pd.DataFrame(vermelhos)[
             ["id", "razao_social", "status", "dias_parado", "ultima_movimentacao"]
-        ], use_container_width=True, hide_index=True)
+        ], width="stretch", hide_index=True)
 
     if amarelos:
         st.warning(
@@ -3418,7 +3418,7 @@ def pagina_lembretes():
         )
         st.dataframe(pd.DataFrame(amarelos)[
             ["id", "razao_social", "status", "dias_parado", "ultima_movimentacao"]
-        ], use_container_width=True, hide_index=True)
+        ], width="stretch", hide_index=True)
 
     if not todos:
         st.success("Nenhum processo em alerta ✅")
@@ -3948,7 +3948,7 @@ def pagina_documentos_vencimento():
                     "dias_alerta": "Alerta (d)",
                 })
                 st.dataframe(view.style.apply(_estilo, axis=1),
-                             use_container_width=True, hide_index=True)
+                             width="stretch", hide_index=True)
 
     # =============== 🏥 VIGILÂNCIA SANITÁRIA ===============
     with tab_visa:
@@ -4130,7 +4130,7 @@ def pagina_atualizar_normas():
         }
         for s in status
     ])
-    st.dataframe(df_status, use_container_width=True, hide_index=True)
+    st.dataframe(df_status, width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -4384,7 +4384,7 @@ def pagina_atualizar_normas():
                 }
                 for h in hist
             ])
-            st.dataframe(df_h, use_container_width=True, hide_index=True)
+            st.dataframe(df_h, width="stretch", hide_index=True)
 
 
 def _render_card_norma(base: str):
@@ -4592,11 +4592,11 @@ def pagina_empresas_redesim():
                             )
                             c_ok, c_del = st.columns([1, 1])
                             salvar = c_ok.form_submit_button(
-                                "💾 Salvar status", use_container_width=True
+                                "💾 Salvar status", width="stretch"
                             )
                             excluir = c_del.form_submit_button(
                                 "🗑️ Excluir este protocolo",
-                                use_container_width=True,
+                                width="stretch",
                             )
 
                         if salvar:
@@ -4728,7 +4728,7 @@ def pagina_empresas_redesim():
 
                 st.dataframe(
                     df.style.apply(_est, axis=1),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -4760,7 +4760,7 @@ def pagina_empresas_redesim():
             uf = c4.text_input("UF", max_chars=2, key="ne_uf")
 
             criar = st.form_submit_button(
-                "➕ Cadastrar empresa", use_container_width=True
+                "➕ Cadastrar empresa", width="stretch"
             )
 
         if criar:
@@ -4903,7 +4903,7 @@ def _renderizar_painel_destrava_tarefa(t: dict) -> None:
         if st.button(
             "💬 Salvar anotação no GESTTA",
             key=f"gestta_save_{t['id']}",
-            use_container_width=True,
+            width="stretch",
             type="primary",
             disabled=not gestta_id,
         ):
@@ -5088,7 +5088,7 @@ def _renderizar_form_distrato(tarefa: dict):
             "🚀 Gerar Word + PDF agora",
             key=f"distrato_go_{tid}",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         ):
             try:
                 # Pasta de saída na workspace do usuário
@@ -5126,7 +5126,7 @@ def _renderizar_form_distrato(tarefa: dict):
         if st.button(
             "❌ Cancelar",
             key=f"distrato_cancel_{tid}",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.pop("_abrir_distrato_modal_tid", None)
             st.rerun()
@@ -5219,7 +5219,7 @@ def _aba_regularizacao():
             "🔄 Sincronizar TUDO do GESTTA",
             key="btn_sync_gestta_full",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             help=("Puxa via API GESTTA todas as suas tarefas "
                   "(abertas, em impedimento, atrasadas, em dia) e "
                   "atualiza o app. Usa o seu JWT pessoal."),
@@ -5329,7 +5329,7 @@ def _aba_regularizacao():
         st.markdown("<div style='height:28px'></div>",
                     unsafe_allow_html=True)
         if st.button("🔄 Recarregar", key="btn_reload_reg",
-                      use_container_width=True):
+                      width="stretch"):
             try:
                 n = reclassificar_tipos_tarefas(forcar=True)
                 st.success(f"Reclassificadas {n} tarefas.")
@@ -5506,7 +5506,7 @@ def _render_card_tarefa_compacta(t: dict, mostrar_distrato: bool = False):
             if st.button(
                 "✅ Resolver",
                 key=f"compact_resol_{t['id']}",
-                use_container_width=True,
+                width="stretch",
                 help="Marca a tarefa como resolvida no app (não toca no GESTTA).",
             ):
                 try:
@@ -5519,7 +5519,7 @@ def _render_card_tarefa_compacta(t: dict, mostrar_distrato: bool = False):
             if st.button(
                 "👁️ Detalhes",
                 key=f"compact_det_{t['id']}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["focus_tarefa_id"] = t["id"]
                 st.info(
@@ -5531,7 +5531,7 @@ def _render_card_tarefa_compacta(t: dict, mostrar_distrato: bool = False):
                 if st.button(
                     "📝 Gerar distrato",
                     key=f"compact_distr_{t['id']}",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                     help="Gera Word + PDF do distrato pré-preenchido.",
                 ):
@@ -5664,7 +5664,7 @@ def pagina_tarefas_gestta():
                     "cliente_nome", "responsavel", "atrasada",
                     "status_gestta", "departamento",
                 ] if c in preview.columns]],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -5690,7 +5690,7 @@ def pagina_tarefas_gestta():
                 if st.button(
                     f"📥 Importar {len(preview)} tarefas",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     registros = df.to_dict(orient="records")
                     res = importar_tarefas_gestta(
@@ -5728,7 +5728,7 @@ def pagina_tarefas_gestta():
         with col_aa:
             if st.button(
                 "🔄 Re-tentar match empresa",
-                use_container_width=True,
+                width="stretch",
                 help="Tenta vincular as tarefas sem empresa a empresas "
                      "cadastradas no banco (por nome normalizado).",
             ):
@@ -5815,7 +5815,7 @@ def pagina_tarefas_gestta():
                         if st.button(
                             "🏢 Vincular empresa",
                             key=f"gestta_vincempbt_{t['id']}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             if sel[1]:
                                 atualizar_tarefa_gestta(
@@ -5829,7 +5829,7 @@ def pagina_tarefas_gestta():
                         if st.button(
                             "↪️ Ver timeline da empresa",
                             key=f"gestta_abretime_{t['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             help="Use o menu 🏢 Empresas / REDESIM para ver o "
                                  "histórico completo de protocolos.",
                         ):
@@ -5860,7 +5860,7 @@ def pagina_tarefas_gestta():
                         if st.button(
                             "📜 Vincular protocolo",
                             key=f"gestta_vincprotbt_{t['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             disabled=not prots_da_emp,
                         ):
                             if sel_p[1]:
@@ -5879,7 +5879,7 @@ def pagina_tarefas_gestta():
                     if st.button(
                         "✅ Marcar como resolvida",
                         key=f"gestta_resolv_{t['id']}",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary",
                     ):
                         marcar_tarefa_resolvida(t["id"], True)
@@ -5888,7 +5888,7 @@ def pagina_tarefas_gestta():
                     if st.button(
                         "🗑 Excluir",
                         key=f"gestta_del_{t['id']}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         excluir_tarefa_gestta(t["id"])
                         st.toast("Tarefa excluída.")
@@ -5905,7 +5905,7 @@ def pagina_tarefas_gestta():
                 [{"Risco": r, "Qtd": stats2["por_risco"].get(r, 0)}
                  for r in RISCOS_GESTTA]
             )
-            st.dataframe(df_risco, use_container_width=True, hide_index=True)
+            st.dataframe(df_risco, width="stretch", hide_index=True)
         with c2:
             st.markdown("**Por responsável**")
             df_resp = pd.DataFrame(
@@ -5914,7 +5914,7 @@ def pagina_tarefas_gestta():
                      stats2["por_responsavel"].items(),
                      key=lambda x: -x[1])]
             )
-            st.dataframe(df_resp, use_container_width=True, hide_index=True)
+            st.dataframe(df_resp, width="stretch", hide_index=True)
 
         st.markdown("**Cobertura**")
         cc1, cc2 = st.columns(2)
@@ -6070,7 +6070,7 @@ def pagina_pendencias():
                             )
                         if st.form_submit_button(
                             "💬 Registrar",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             if nova_nota.strip():
                                 adicionar_movimento_pendencia(
@@ -6092,7 +6092,7 @@ def pagina_pendencias():
                         )
                         if st.button("Aplicar status",
                                      key=f"pend_st_bt_{p['id']}",
-                                     use_container_width=True):
+                                     width="stretch"):
                             atualizar_status_pendencia(p["id"], novo_stat)
                             st.toast(f"Status: {novo_stat}.")
                             st.rerun()
@@ -6105,7 +6105,7 @@ def pagina_pendencias():
                         )
                         if st.button("Aplicar prioridade",
                                      key=f"pend_pr_bt_{p['id']}",
-                                     use_container_width=True):
+                                     width="stretch"):
                             atualizar_pendencia(p["id"], prioridade=nova_prio)
                             st.toast(f"Prioridade: {nova_prio}.")
                             st.rerun()
@@ -6113,7 +6113,7 @@ def pagina_pendencias():
                         if st.button(
                             "✅ Resolver",
                             key=f"pend_res_{p['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary",
                         ):
                             resolver_pendencia(p["id"])
@@ -6123,7 +6123,7 @@ def pagina_pendencias():
                         if st.button(
                             "🗑 Excluir",
                             key=f"pend_del_{p['id']}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             excluir_pendencia(p["id"])
                             st.toast("Pendência excluída.")
@@ -6297,7 +6297,7 @@ def pagina_pendencias():
             ok = st.form_submit_button(
                 "📌 Criar pendência",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
             if ok:
                 if not assunto.strip():
@@ -6362,7 +6362,7 @@ def pagina_pendencias():
                 "Aberta em": p["data_inicio"],
                 "Atualizada em": p["atualizado_em"],
             } for p in resolvidas])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------
@@ -6419,7 +6419,7 @@ def _wizard_empresa_existente():
                     unsafe_allow_html=True)
         bt_analisar = st.button(
             "🔍 Analisar",
-            type="primary", use_container_width=True,
+            type="primary", width="stretch",
             key="btn_wiz_analisar_cnpj",
         )
 
@@ -6515,7 +6515,7 @@ def _wizard_empresa_nova():
     )
     bt_nova = st.button(
         "📋 Gerar checklist de pré-abertura",
-        type="primary", use_container_width=True,
+        type="primary", width="stretch",
         key="btn_wiz_nova",
     )
 
@@ -6805,7 +6805,7 @@ def _render_relatorio_empresa(rel: dict):
                     st.link_button(
                         "🔍 Consultar situação",
                         item["link_consulta"],
-                        use_container_width=True,
+                        width="stretch",
                     )
                 else:
                     st.caption("(sem link de consulta cadastrado)")
@@ -6814,7 +6814,7 @@ def _render_relatorio_empresa(rel: dict):
                     st.link_button(
                         "📝 Cadastrar / fazer registro",
                         item["link_cadastro"],
-                        use_container_width=True,
+                        width="stretch",
                     )
                 else:
                     st.caption("(sem link de cadastro cadastrado)")
@@ -6848,7 +6848,7 @@ def _render_relatorio_empresa(rel: dict):
                     if st.button(
                         "✅ Verificado",
                         key=f"{key_pref}_ok",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(status == "verificado"),
                     ):
                         try:
@@ -6866,7 +6866,7 @@ def _render_relatorio_empresa(rel: dict):
                     if st.button(
                         "⛔ N/A",
                         key=f"{key_pref}_na",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(status == "nao_se_aplica"),
                         help="Confirmei que não se aplica a esta empresa.",
                     ):
@@ -6885,7 +6885,7 @@ def _render_relatorio_empresa(rel: dict):
                     if st.button(
                         "🚨 Problema",
                         key=f"{key_pref}_pb",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(status == "problema"),
                         help="Encontrei pendência/irregularidade.",
                     ):
@@ -6904,7 +6904,7 @@ def _render_relatorio_empresa(rel: dict):
                     if st.button(
                         "🔄 Resetar",
                         key=f"{key_pref}_rst",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(verif is None),
                         help="Apaga a verificação e volta a aparecer "
                              "como pendente.",
@@ -6986,7 +6986,7 @@ def _consulta_cnae_individual():
     with col_btn:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         consultar = st.button("🔍 Consultar", type="primary",
-                              use_container_width=True,
+                              width="stretch",
                               key="btn_consultar_cnae_individual")
 
     if not cnae_input or not (consultar or
@@ -7618,7 +7618,7 @@ def _consulta_cnae_individual():
                 st.caption(desc)
                 st.link_button(
                     "🔗 Abrir fonte oficial", url,
-                    use_container_width=True,
+                    width="stretch",
                 )
             st.markdown("<div style='height:6px'></div>",
                         unsafe_allow_html=True)
@@ -7713,12 +7713,12 @@ def pagina_configuracoes():
                         st.link_button(
                             "🌐 Abrir Supabase pra criar o usuário",
                             cria_user_url,
-                            use_container_width=True,
+                            width="stretch",
                         )
                     with c2:
                         if st.button("✅ Aprovar",
                                       key=f"apr_{s['id']}",
-                                      use_container_width=True,
+                                      width="stretch",
                                       type="primary"):
                             try:
                                 atualizar_solicitacao_cadastro(
@@ -7738,7 +7738,7 @@ def pagina_configuracoes():
                     with c3:
                         if st.button("❌ Rejeitar",
                                       key=f"rej_{s['id']}",
-                                      use_container_width=True):
+                                      width="stretch"):
                             try:
                                 atualizar_solicitacao_cadastro(
                                     s["id"], "rejeitada",
@@ -7852,7 +7852,7 @@ def pagina_configuracoes():
                 if st.button(
                     "💾 Salvar e testar",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     key="btn_salvar_telegram_pessoal",
                 ):
                     if not _novo_chat.strip():
@@ -7895,7 +7895,7 @@ def pagina_configuracoes():
                 if _atual and _atual.get("ativo"):
                     if st.button(
                         "⏸️ Pausar",
-                        use_container_width=True,
+                        width="stretch",
                         key="btn_pausar_telegram_pessoal",
                     ):
                         try:
@@ -7913,7 +7913,7 @@ def pagina_configuracoes():
                     if _ativos:
                         with st.popover(
                             f"👥 {len(_ativos)} ativo(s)",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             for d in _ativos:
                                 marca = "👤"
@@ -8025,7 +8025,7 @@ def pagina_configuracoes():
                 if st.button(
                     "💾 Salvar e testar",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     key="btn_salvar_gestta_pessoal",
                 ):
                     _jwt_strip = (_novo_jwt_pess or "").strip()
@@ -8075,7 +8075,7 @@ def pagina_configuracoes():
                 if _rec and _rec.get("ativo"):
                     if st.button(
                         "⏸️ Pausar",
-                        use_container_width=True,
+                        width="stretch",
                         key="btn_pausar_gestta_pessoal",
                     ):
                         try:
@@ -8093,7 +8093,7 @@ def pagina_configuracoes():
                     if _ativos_g:
                         with st.popover(
                             f"👥 {len(_ativos_g)} pessoa(s)",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             for d in _ativos_g:
                                 marca = "👤"
@@ -8154,7 +8154,7 @@ def pagina_configuracoes():
             )
             salvar = st.form_submit_button(
                 "💾 Salvar token", type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         if salvar:
             if not novo_jwt.strip():
@@ -8240,7 +8240,7 @@ def pagina_fila_renovacao():
     with sb1:
         if st.button("🔄 Sincronizar GESTTA",
                      type="primary",
-                     use_container_width=True,
+                     width="stretch",
                      key="btn_fila_sync"):
             with st.spinner("Sincronizando..."):
                 res = _sync_gestta_completo()
@@ -8415,7 +8415,7 @@ def _render_card_fila(idx: int, t: dict):
                     "🚀 Iniciar protocolo",
                     key=f"fila_iniciar_{t['id']}",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     help="Abre o Facilita-SP em nova aba e mostra "
                          "form pra colar o número quando você "
                          "protocolar lá.",
@@ -8426,7 +8426,7 @@ def _render_card_fila(idx: int, t: dict):
                 if st.button(
                     "⏭️ Pular",
                     key=f"fila_pular_{t['id']}",
-                    use_container_width=True,
+                    width="stretch",
                     help="Tira da fila (não vou trabalhar agora).",
                 ):
                     st.session_state[
@@ -8436,7 +8436,7 @@ def _render_card_fila(idx: int, t: dict):
                 if st.button(
                     "↩️ Despular",
                     key=f"fila_despular_{t['id']}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     try:
                         despular_tarefa_gestta(t["id"])
@@ -8483,12 +8483,12 @@ def _render_modal_iniciar_protocolo(t: dict):
         st.link_button(
             "🌐 Abrir Facilita-SP",
             "https://www.facilitasp.sp.gov.br/",
-            use_container_width=True,
+            width="stretch",
         )
         st.link_button(
             "📋 REDESIM Nacional",
             "https://www.gov.br/empresas-e-negocios/pt-br/redesim",
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown("---")
@@ -8530,7 +8530,7 @@ def _render_modal_iniciar_protocolo(t: dict):
         if st.button(
             "💾 Cadastrar protocolo",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key=f"fila_save_{t['id']}",
         ):
             if not numero.strip():
@@ -8565,7 +8565,7 @@ def _render_modal_iniciar_protocolo(t: dict):
     with bg2:
         if st.button(
             "❌ Cancelar",
-            use_container_width=True,
+            width="stretch",
             key=f"fila_cancel_{t['id']}",
         ):
             st.session_state.pop("_fila_iniciar_id", None)
@@ -8594,7 +8594,7 @@ def _render_modal_pular(t: dict):
         if st.button(
             "⏭️ Confirmar pular",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key=f"fila_pular_ok_{t['id']}",
         ):
             try:
@@ -8607,7 +8607,7 @@ def _render_modal_pular(t: dict):
     with pc2:
         if st.button(
             "❌ Cancelar",
-            use_container_width=True,
+            width="stretch",
             key=f"fila_pular_cancel_{t['id']}",
         ):
             st.session_state.pop("_fila_pular_id", None)
@@ -8735,7 +8735,7 @@ def pagina_cobrancas_dominio():
                                 "✅ Lancei",
                                 key=f"cob_lanc_{cb['id']}",
                                 type="primary",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 marcar_cobranca_lancada(
                                     cb["id"],
@@ -8750,7 +8750,7 @@ def pagina_cobrancas_dominio():
                             if st.button(
                                 "❌ Cancelar",
                                 key=f"cob_canc_{cb['id']}",
-                                use_container_width=True,
+                                width="stretch",
                                 help="Marca como cancelada (não vai cobrar).",
                             ):
                                 cancelar_cobranca(
@@ -8776,7 +8776,7 @@ def pagina_cobrancas_dominio():
                 "Por": l.get("lancado_por"),
                 "Obs": l.get("observacao") or "",
             } for l in lancadas])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             total_lanc = sum(float(l.get("valor_lancado") or 0) for l in lancadas)
             total_com  = sum(float(l.get("comissao") or 0) for l in lancadas)
             def _brl(v): return f"R$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
@@ -8825,7 +8825,7 @@ def pagina_cobrancas_dominio():
                 "Total lançado": f"R$ {m['total_lancado']:,.2f}".replace(",","X").replace(".",",").replace("X","."),
                 "Minha comissão": f"R$ {m['total_comissao']:,.2f}".replace(",","X").replace(".",",").replace("X","."),
             } for m in meses])
-            st.dataframe(df_mes, use_container_width=True, hide_index=True)
+            st.dataframe(df_mes, width="stretch", hide_index=True)
             grand_total  = sum(m["total_lancado"] for m in meses)
             grand_comiss = sum(m["total_comissao"] for m in meses)
             def _brl2(v): return f"R$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
@@ -8861,7 +8861,7 @@ def pagina_cobrancas_dominio():
                     if st.button(
                         "💾 Atualizar",
                         key=f"vsav_{v['tipo_servico']}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         atualizar_valor_cobranca(
                             v["tipo_servico"], novo_val,
@@ -8913,7 +8913,7 @@ def pagina_cobrancas_dominio():
         if st.button(
             "➕ Criar cobrança pendente",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="btn_cobm_criar",
         ):
             if not mc_cli.strip():
@@ -9083,7 +9083,7 @@ def pagina_base_regras():
         if st.button(
             "💾 Salvar regra",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="btn_salvar_regra",
         ):
             # Validações
@@ -9174,7 +9174,7 @@ def pagina_base_regras():
                     ),
                 })
             df = pd.DataFrame(linhas)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
 
     # ============ Tab 3: Buscar regras ============
     with tab_buscar:
