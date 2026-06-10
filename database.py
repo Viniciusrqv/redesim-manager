@@ -713,6 +713,47 @@ DDL = [
 ]
 
 
+def _migrar_postgres() -> None:
+    """Migrações de coluna para Postgres (idempotente: ADD COLUMN IF NOT EXISTS).
+
+    No Postgres o _migrar() (SQLite/PRAGMA) não roda; as colunas adicionadas
+    depois da criação das tabelas precisam ser garantidas aqui.
+    """
+    _cols = [
+        ("vigilancia_sanitaria", "risco_sanitario TEXT"),
+        ("cnae_risco", "grau_risco INTEGER"),
+        ("cnae_risco", "fonte TEXT"),
+        ("processos", "canal_redesim TEXT DEFAULT 'Online'"),
+        ("processos", "motivo_presencial TEXT"),
+        ("protocolos_redesim", "substituido_por_id INTEGER"),
+        ("cnae_conselho", "tipo_registro TEXT"),
+        ("pendencias", "cliente_avulso TEXT"),
+        ("cobrancas_dominio", "comissao REAL"),
+        ("tarefas_gestta", "gestta_id TEXT"),
+        ("tarefas_gestta", "gestta_customer_id TEXT"),
+        ("tarefas_gestta", "gestta_owner_id TEXT"),
+        ("tarefas_gestta", "subtype TEXT"),
+        ("tarefas_gestta", "due_date TEXT"),
+        ("tarefas_gestta", "competence_date TEXT"),
+        ("tarefas_gestta", "created_at TEXT"),
+        ("tarefas_gestta", "legal_date TEXT"),
+        ("tarefas_gestta", "total_step INTEGER"),
+        ("tarefas_gestta", "done_step INTEGER"),
+        ("tarefas_gestta", "overdue INTEGER"),
+        ("tarefas_gestta", "fine INTEGER"),
+        ("tarefas_gestta", "done_overdue INTEGER"),
+        ("tarefas_gestta", "done_fine INTEGER"),
+    ]
+    for _tab, _coldef in _cols:
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    f"ALTER TABLE {_tab} ADD COLUMN IF NOT EXISTS {_coldef}"
+                )
+        except Exception:
+            pass
+
+
 def init_db() -> None:
     """Cria tabelas se não existirem e popula mocks na 1ª execução."""
     with get_conn() as conn:
@@ -726,6 +767,9 @@ def init_db() -> None:
         if not is_postgres():
             _migrar(conn)
             _popular_mocks(conn)
+
+    if is_postgres():
+        _migrar_postgres()
 
 
 def _migrar(conn: sqlite3.Connection) -> None:
