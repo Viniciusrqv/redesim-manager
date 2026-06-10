@@ -528,6 +528,7 @@ st.sidebar.caption(
 # Lista de páginas (source of truth)
 PAGINAS_LIST = [
     "📊 Dashboard/Kanban",
+    "📋 Fila do dia",
     "➕ Novo Processo",
     "📄 Documentos",
     "🏢 Empresas / REDESIM",
@@ -9315,8 +9316,66 @@ def pagina_base_regras():
 # ---------------------------------------------------------
 # ROTEAMENTO
 # ---------------------------------------------------------
+def pagina_fila_do_dia():
+    st.header("📋 Fila do dia")
+    st.caption(
+        "O que precisa de ação — mais parado/urgente no topo. "
+        "Esta tela só lê; resolva nas páginas de origem."
+    )
+    import pandas as _pd
+    from database import (
+        processos_atrasados, documentos_proximos_vencimento,
+        alvaras_vencendo, listar_pendencias,
+        contar_cobrancas_pendentes, total_pendente_cobranca,
+    )
+
+    def _secao(titulo, dados, ajuda=""):
+        st.subheader(titulo)
+        if ajuda:
+            st.caption(ajuda)
+        if dados:
+            st.dataframe(_pd.DataFrame(dados), hide_index=True, width="stretch")
+        else:
+            st.caption("Nada por aqui. 👍")
+
+    try:
+        _secao(
+            "🚦 Processos em aberto (mais parados no topo)",
+            processos_atrasados(0),
+            "Quanto mais dias parado, mais urgente.",
+        )
+    except Exception as _e:
+        st.warning(f"Não consegui carregar processos: {_e}")
+
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        try:
+            _secao("📄 Documentos/licenças vencendo", documentos_proximos_vencimento())
+        except Exception as _e:
+            st.warning(f"Documentos: {_e}")
+    with _c2:
+        try:
+            _secao("🚒 Alvarás de bombeiros vencendo", alvaras_vencendo())
+        except Exception as _e:
+            st.warning(f"Alvarás: {_e}")
+
+    try:
+        _secao("📌 Pendências abertas", listar_pendencias())
+    except Exception as _e:
+        st.warning(f"Pendências: {_e}")
+
+    try:
+        _qtd = contar_cobrancas_pendentes()
+        _tot = total_pendente_cobranca()
+        if _qtd:
+            st.info(f"💰 {_qtd} cobrança(s) DOMÍNIO pendente(s) — R$ {_tot:.2f} a lançar.")
+    except Exception:
+        pass
+
+
 PAGINAS = {
     "📊 Dashboard/Kanban": pagina_dashboard,
+    "📋 Fila do dia": pagina_fila_do_dia,
     "➕ Novo Processo": pagina_novo_processo,
     "📄 Documentos": pagina_documentos_vencimento,
     "🏢 Empresas / REDESIM": pagina_empresas_redesim,
