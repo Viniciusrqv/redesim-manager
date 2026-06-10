@@ -4,7 +4,7 @@
 # Otimizado pra arrancada rápida no Streamlit Cloud — só o essencial.
 
 # Interface visual
-streamlit>=1.39.0
+streamlit==1.58.0  # fixado: 1.58 ainda aceita use_container_width / components.v1.html (evita quebra em update)
 streamlit-extras>=0.4.7
 altair>=5.0.0
 
