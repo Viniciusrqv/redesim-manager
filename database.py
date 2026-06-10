@@ -14,6 +14,46 @@ from typing import Iterable, Optional
 from config import DATABASE_PATH
 from db import get_connection, is_postgres
 
+# === Cache de leituras (performance) ===
+import streamlit as st
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:
+    def get_script_run_ctx():
+        return True
+
+
+def cache_read(ttl=120):
+    """Cacheia leituras apenas dentro do app Streamlit; fora (scheduler) executa direto."""
+    def deco(fn):
+        cached = st.cache_data(ttl=ttl, show_spinner=False)(fn)
+        def wrapper(*a, **k):
+            try:
+                in_ctx = get_script_run_ctx() is not None
+            except Exception:
+                in_ctx = False
+            return cached(*a, **k) if in_ctx else fn(*a, **k)
+        return wrapper
+    return deco
+
+
+def limpar_cache_leituras():
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
+def invalidates_cache(fn):
+    """Limpa o cache de leituras apos uma escrita."""
+    def wrapper(*a, **k):
+        try:
+            return fn(*a, **k)
+        finally:
+            limpar_cache_leituras()
+    return wrapper
+
+
 
 # =====================================================
 # CONEXÃO
@@ -4549,6 +4589,7 @@ def garantir_valores_cobranca_padrao() -> None:
                 )
 
 
+@cache_read(ttl=300)
 def listar_valores_cobranca() -> list[dict]:
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
@@ -4556,6 +4597,7 @@ def listar_valores_cobranca() -> list[dict]:
         ).fetchall()]
 
 
+@invalidates_cache
 def atualizar_valor_cobranca(
     tipo: str, valor: float, *, descricao: str | None = None,
     atualizado_por: str | None = None,
@@ -4599,6 +4641,7 @@ def _classificar_tipo_cobranca(
     return TIPO_COB_OUTRO
 
 
+@invalidates_cache
 def criar_cobranca_pendente(
     *,
     cliente_nome: str,
@@ -4663,6 +4706,7 @@ def criar_cobranca_pendente(
         return cur.lastrowid
 
 
+@cache_read(ttl=60)
 def listar_cobrancas_por_mes() -> list[dict]:
     """Agrupa cobranças lançadas por mês.
 
@@ -4710,6 +4754,7 @@ def listar_cobrancas_por_mes() -> list[dict]:
     )
 
 
+@cache_read(ttl=60)
 def listar_cobrancas_pendentes(
     *, status: str | None = "pendente",
     responsavel: str | None = None,
@@ -4727,6 +4772,7 @@ def listar_cobrancas_pendentes(
         return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
 
 
+@invalidates_cache
 def marcar_cobranca_lancada(
     cobranca_id: int,
     *, valor_lancado: float | None = None,
@@ -4748,6 +4794,7 @@ def marcar_cobranca_lancada(
         )
 
 
+@invalidates_cache
 def atualizar_comissao(cobranca_id: int, comissao) -> None:
     """Atualiza apenas a comissão de uma cobrança já lançada."""
     with get_conn() as conn:
@@ -4757,6 +4804,7 @@ def atualizar_comissao(cobranca_id: int, comissao) -> None:
         )
 
 
+@invalidates_cache
 def cancelar_cobranca(cobranca_id: int, motivo: str | None = None) -> None:
     with get_conn() as conn:
         conn.execute(
@@ -4766,6 +4814,7 @@ def cancelar_cobranca(cobranca_id: int, motivo: str | None = None) -> None:
         )
 
 
+@cache_read(ttl=60)
 def contar_cobrancas_pendentes() -> int:
     with get_conn() as conn:
         r = conn.execute(
@@ -4775,6 +4824,7 @@ def contar_cobrancas_pendentes() -> int:
         return int(dict(r)["c"]) if r else 0
 
 
+@cache_read(ttl=60)
 def total_pendente_cobranca() -> float:
     with get_conn() as conn:
         r = conn.execute(
