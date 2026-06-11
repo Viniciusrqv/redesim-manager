@@ -1900,9 +1900,11 @@ def renovar_documento(doc_antigo_id, novo_data_vencimento,
 # Tipos válidos
 TIPO_PROTOCOLO_VIABILIDADE = "Viabilidade"
 TIPO_PROTOCOLO_LICENCIAMENTO = "Licenciamento"
+TIPO_PROTOCOLO_ALTERACAO = "Alteração de atuação (249)"
 TIPOS_PROTOCOLO_REDESIM = [
     TIPO_PROTOCOLO_VIABILIDADE,
     TIPO_PROTOCOLO_LICENCIAMENTO,
+    TIPO_PROTOCOLO_ALTERACAO,
 ]
 
 # Status válidos (reais do portal Facilita-SP/REDESIM)
@@ -1915,6 +1917,7 @@ STATUS_PROTOCOLO_VIABILIDADE = [
     "Inativa",
 ]
 STATUS_PROTOCOLO_LICENCIAMENTO = [
+    "Coletor Nacional",
     "Pendente de avaliação do risco",
     "Em análise",
     "Concluída",
@@ -1928,7 +1931,7 @@ STATUS_PROTOCOLO_PROBLEMA = {"Indeferida", "Cancelada", "Inativa"}
 # Status finalizados (pro verde do semáforo / timeline)
 STATUS_PROTOCOLO_OK = {"Aprovada", "Concluída"}
 # Status em andamento (amarelo)
-STATUS_PROTOCOLO_EM_ANDAMENTO = {"Em análise", "Pendente de avaliação do risco"}
+STATUS_PROTOCOLO_EM_ANDAMENTO = {"Em análise", "Pendente de avaliação do risco", "Coletor Nacional"}
 
 
 def buscar_empresa_por_cnpj(cnpj: str) -> dict | None:
