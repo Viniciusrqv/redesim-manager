@@ -1208,15 +1208,29 @@ def listar_empresas():
         )]
 
 
+def _extrair_id(lr):
+    """Id novo apos INSERT: int (SQLite lastrowid) ou row do RETURNING (Postgres)."""
+    if lr is None or isinstance(lr, int):
+        return lr
+    try:
+        return lr["id"]
+    except (TypeError, KeyError, IndexError):
+        pass
+    try:
+        return lr[0]
+    except (TypeError, KeyError, IndexError):
+        return lr
+
+
 def criar_empresa(razao_social, cnpj=None, endereco=None,
                   municipio=None, uf=None, responsavel=None):
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO empresas (razao_social, cnpj, endereco, municipio, uf, responsavel)
-               VALUES (?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?) RETURNING id""",
             (razao_social, cnpj, endereco, municipio, uf, responsavel),
         )
-        return cur.lastrowid
+        return _extrair_id(cur.lastrowid)
 
 
 def listar_processos():
@@ -1240,11 +1254,11 @@ def criar_processo(empresa_id, protocolo, tipo, status="Em análise",
             """INSERT INTO processos
                (empresa_id, protocolo, tipo, status, risco, exige_sanitaria,
                 observacoes, canal_redesim, motivo_presencial)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?) RETURNING id""",
             (empresa_id, protocolo, tipo, status, risco, exige_sanitaria,
              observacoes, canal_redesim, motivo_presencial),
         )
-        proc_id = cur.lastrowid
+        proc_id = _extrair_id(cur.lastrowid)
         if cnaes:
             conn.executemany(
                 """INSERT INTO processo_cnaes (processo_id, cnae, descricao, principal)
