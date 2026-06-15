@@ -336,6 +336,55 @@ def _replicar_status_no_gestta(
     return out
 
 
+def _anotar_criacao_modo_rapido(emp_id, proto_rdm_id, numero, tipo,
+                                status="Em análise"):
+    """MODO RÁPIDO: se a empresa tem UMA tarefa GESTTA pendente sem
+    protocolo, vincula ao protocolo recém-criado e anota a criação.
+    Reusa _replicar_status_no_gestta pro post em si."""
+    out = {"ok": False, "mensagem": ""}
+    if not proto_rdm_id or not emp_id:
+        out["mensagem"] = "Sem protocolo/empresa pra vincular"
+        return out
+    try:
+        from database import get_conn as _gc
+        with _gc() as conn:
+            rows = conn.execute(
+                "SELECT id FROM tarefas_gestta WHERE empresa_id = ? "
+                "AND resolvida = 0 AND gestta_id IS NOT NULL "
+                "AND protocolo_id IS NULL ORDER BY id DESC",
+                (emp_id,),
+            ).fetchall()
+        cand = [dict(r) for r in rows]
+    except Exception as exc:
+        out["mensagem"] = f"Erro buscando tarefa GESTTA: {exc}"
+        return out
+    if not cand:
+        out["mensagem"] = "Empresa sem tarefa GESTTA pendente — nada a anotar"
+        return out
+    if len(cand) > 1:
+        out["mensagem"] = (
+            f"{len(cand)} tarefas GESTTA pra esta empresa — "
+            "vincule manualmente pra anotar"
+        )
+        return out
+    tarefa_id = cand[0]["id"]
+    try:
+        from database import get_conn as _gc2
+        with _gc2() as conn:
+            conn.execute(
+                "UPDATE tarefas_gestta SET protocolo_id = ? WHERE id = ?",
+                (proto_rdm_id, tarefa_id),
+            )
+    except Exception as exc:
+        out["mensagem"] = f"Erro vinculando tarefa: {exc}"
+        return out
+    return _replicar_status_no_gestta(
+        {"id": proto_rdm_id, "numero_protocolo": numero, "tipo": tipo},
+        status or "Em análise",
+        observacoes="Protocolo criado via MODO RÁPIDO (Cartão CNPJ).",
+    )
+
+
 def atualizar_status_protocolo_com_gestta(
     protocolo_id: int, novo_status: str,
     observacoes: str | None = None,
@@ -2219,6 +2268,21 @@ def pagina_novo_processo():
                             f"⚠️ Processo criado, mas falhei ao registrar o "
                             f"protocolo na Timeline: {exc}"
                         )
+                    # MODO RÁPIDO: anota a criação no GESTTA se a empresa
+                    # tiver UMA tarefa pendente vinculável (senão, ignora).
+                    if proto_rdm_id:
+                        try:
+                            _r_mr = _anotar_criacao_modo_rapido(
+                                emp_id, proto_rdm_id, proto_ed.strip(),
+                                redesim_tipo, redesim_status,
+                            )
+                            if _r_mr.get("ok"):
+                                st.info("📝 Anotação de criação enviada ao GESTTA.")
+                            else:
+                                st.caption(f"GESTTA: {_r_mr.get('mensagem')}")
+                        except Exception as _e_mr:
+                            st.caption(f"GESTTA: não anotou ({_e_mr}).")
+
 
                     # Substituição automática dos problemáticos anteriores
                     n_subs = 0
