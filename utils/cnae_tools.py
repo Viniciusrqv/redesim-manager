@@ -681,6 +681,20 @@ def extrair_dados_cartao_cnpj(caminho_pdf: str) -> dict:
         except Exception:
             texto = ""
 
+    # PyMuPDF (fitz) tambem quando o texto veio ilegivel (nao so em excecao):
+    # fonte sem Unicode que o pdfplumber le como lixo as vezes sai certa no fitz.
+    if _texto_ilegivel(texto):
+        try:
+            import fitz
+            _t_fitz = ""
+            with fitz.open(caminho_pdf) as _doc:
+                for _pg in _doc:
+                    _t_fitz += _pg.get_text() + "\n"
+            if not _texto_ilegivel(_t_fitz):
+                texto = _t_fitz
+        except Exception:
+            pass
+
     # Fallback para OCR se o texto estiver ilegível
     idioma_ocr = None
     if _texto_ilegivel(texto):
