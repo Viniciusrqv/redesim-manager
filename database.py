@@ -3002,11 +3002,11 @@ def iniciar_protocolo_da_tarefa(
             """INSERT INTO protocolos_redesim
                  (empresa_id, tipo, numero_protocolo, status,
                   data_solicitacao, observacoes)
-                 VALUES (?, ?, ?, ?, ?, ?)""",
+                 VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
             (emp_id, tipo_protocolo, numero_protocolo, status_inicial,
              data_solicitacao, observacoes),
         )
-        protocolo_id = cur.lastrowid
+        protocolo_id = _extrair_id(cur.lastrowid)
 
         # Vincula a tarefa GESTTA ao protocolo
         conn.execute(
