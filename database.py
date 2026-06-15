@@ -1980,11 +1980,11 @@ def criar_protocolo_redesim(
             """INSERT INTO protocolos_redesim
                (empresa_id, tipo, numero_protocolo, numero_solicitacao,
                 data_solicitacao, evento, orgao_registro, status, observacoes)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?) RETURNING id""",
             (empresa_id, tipo, numero_protocolo, numero_solicitacao,
              data_solicitacao, evento, orgao_registro, status, observacoes),
         )
-        return cur.lastrowid
+        return _extrair_id(cur.lastrowid)
 
 
 def listar_protocolos_empresa(empresa_id: int) -> list[dict]:
