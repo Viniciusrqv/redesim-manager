@@ -300,6 +300,20 @@ DDL = [
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS protocolo_anotacoes (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        protocolo_id  INTEGER NOT NULL,
+        texto         TEXT NOT NULL,
+        autor         TEXT,
+        criado_em     TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY(protocolo_id) REFERENCES protocolos_redesim(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_anotacoes_protocolo
+    ON protocolo_anotacoes(protocolo_id);
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_protocolos_empresa
     ON protocolos_redesim(empresa_id);
     """,
@@ -1958,6 +1972,29 @@ def buscar_empresa_por_cnpj(cnpj: str) -> dict | None:
             (digitos,),
         ).fetchone()
         return dict(r) if r else None
+
+
+def criar_anotacao_protocolo(protocolo_id, texto, autor=None):
+    """Registra uma anotação (log do que foi feito) num protocolo REDESIM."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO protocolo_anotacoes (protocolo_id, texto, autor) "
+            "VALUES (?, ?, ?) RETURNING id",
+            (protocolo_id, texto, autor),
+        )
+        return _extrair_id(cur.lastrowid)
+
+
+def listar_anotacoes_protocolo(protocolo_id):
+    """Lista as anotações de um protocolo, mais recentes primeiro."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, protocolo_id, texto, autor, criado_em "
+            "FROM protocolo_anotacoes WHERE protocolo_id = ? "
+            "ORDER BY id DESC",
+            (protocolo_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def criar_protocolo_redesim(
