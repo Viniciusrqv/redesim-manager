@@ -1974,34 +1974,25 @@ def pagina_novo_processo():
                             "pequenas imperfeições de reconhecimento.")
                 elif info.get("idioma_ocr") == "eng":
                     st.warning(
-                        "⚠️ Este PDF precisou de OCR, mas o **pacote "
-                        "Português do Tesseract não está instalado** — "
-                        "caiu para OCR em inglês. Números (CNPJ, CEP, "
-                        "datas) e caracteres com acento vão sair "
-                        "imperfeitos.\n\n"
-                        "**Para corrigir:** baixe o instalador em "
-                        "https://github.com/UB-Mannheim/tesseract/wiki e, "
-                        "na tela **Additional language data**, marque "
-                        "**Portuguese**. Depois marque **Add tesseract to "
-                        "PATH** e reinicie o Streamlit."
+                        "⚠️ Este PDF usou OCR mas caiu para inglês — o "
+                        "pacote de português (tesseract-ocr-por) pode não "
+                        "ter subido no servidor ainda. Números (CNPJ, CEP, "
+                        "datas) saem certos; acentos podem ficar imperfeitos. "
+                        "Se persistir, dê um Reboot no app pra reinstalar os "
+                        "pacotes do servidor."
                     )
                 else:
                     st.info("🔍 Este PDF usou OCR. Confira os dados abaixo.")
             elif not info.get("razao_social") and not info.get("cnaes"):
                 st.error(
                     "❌ Não consegui extrair dados deste PDF.\n\n"
-                    "**Causa provável:** o PDF está com fonte sem Unicode "
-                    "e o **Tesseract OCR não está instalado** no seu Windows.\n\n"
-                    "**Como resolver:**\n"
-                    "1. Baixe o instalador: "
-                    "https://github.com/UB-Mannheim/tesseract/wiki "
-                    "(arquivo `tesseract-ocr-w64-setup-x.x.x.exe`)\n"
-                    "2. Durante a instalação, marque **Additional language data → "
-                    "Portuguese**\n"
-                    "3. Ao final, **marque a opção 'Add tesseract to PATH'**\n"
-                    "4. Reinicie o Streamlit e tente de novo\n\n"
-                    "Enquanto isso, você pode preencher os campos abaixo "
-                    "manualmente."
+                    "**Causa provável:** o cartão foi salvo com fonte sem "
+                    "Unicode (comum ao 'imprimir como PDF' pelo navegador) "
+                    "e o OCR não rodou no servidor.\n\n"
+                    "**O que fazer:** preencha os campos abaixo manualmente "
+                    "por enquanto. Se acontecer com vários cartões, avise — "
+                    "o OCR (tesseract-ocr) precisa estar instalado no "
+                    "servidor; um Reboot do app reinstala os pacotes."
                 )
 
             # Verifica se a empresa já existe (usa normalização de CNPJ)
@@ -8610,6 +8601,20 @@ def _render_modal_iniciar_protocolo(t: dict):
                         f"toda mudança de status vai pro GESTTA "
                         f"automaticamente."
                     )
+                    # Anota no GESTTA que o protocolo foi criado (post-back)
+                    try:
+                        _r_post = _replicar_status_no_gestta(
+                            {"id": pid, "numero_protocolo": numero.strip(),
+                             "tipo": tipo_protocolo},
+                            "Em análise",
+                            observacoes="Protocolo criado/registrado via REDESIM Manager.",
+                        )
+                        if _r_post.get("ok"):
+                            st.info("📝 Anotação de criação enviada ao GESTTA.")
+                        else:
+                            st.caption(f"GESTTA: {_r_post.get('mensagem')}")
+                    except Exception as _e_post:
+                        st.caption(f"GESTTA: não anotou ({_e_post}).")
                     st.session_state.pop("_fila_iniciar_id", None)
                     import time as _t
                     _t.sleep(1.5)
