@@ -40,6 +40,8 @@ from database import (init_db, listar_empresas, criar_empresa,
                       NORMAS_META, registrar_atualizacao_norma,
                       ultima_atualizacao, historico_atualizacoes,
                       dias_desde_atualizacao, status_normas,
+                      # Anotações de protocolo (log do que foi feito)
+                      criar_anotacao_protocolo, listar_anotacoes_protocolo,
                       # Protocolos REDESIM
                       TIPOS_PROTOCOLO_REDESIM, TIPO_PROTOCOLO_VIABILIDADE,
                       TIPO_PROTOCOLO_LICENCIAMENTO,
@@ -383,6 +385,92 @@ def _anotar_criacao_modo_rapido(emp_id, proto_rdm_id, numero, tipo,
         status or "Em análise",
         observacoes="Protocolo criado via MODO RÁPIDO (Cartão CNPJ).",
     )
+
+
+def _postar_anotacao_gestta(protocolo_id, texto, autor):
+    """Posta uma anotação livre no chat da tarefa GESTTA vinculada."""
+    out = {"ok": False, "mensagem": ""}
+    try:
+        from database import get_conn as _gc
+        with _gc() as conn:
+            r = conn.execute(
+                "SELECT gestta_id FROM tarefas_gestta WHERE protocolo_id = ? "
+                "AND resolvida = 0 AND gestta_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (protocolo_id,),
+            ).fetchone()
+        gid = dict(r).get("gestta_id") if r else None
+    except Exception as exc:
+        out["mensagem"] = f"GESTTA: erro buscando tarefa ({exc})"
+        return out
+    if not gid:
+        out["mensagem"] = "Sem tarefa GESTTA vinculada — salvo só no sistema"
+        return out
+    from auth import usuario_atual as _u_at
+    _u = _u_at() or {}
+    jwt = obter_jwt_gestta_efetivo(_u.get("email"))
+    if not jwt:
+        out["mensagem"] = "Sem JWT GESTTA — salvo só no sistema"
+        return out
+    texto_g = f"[REDESIM Manager] 🗒️ Anotação: {texto}\n\n— {autor}"
+    try:
+        from utils.gestta_api import GesttaClient
+        GesttaClient(jwt).adicionar_comentario_tarefa(gid, texto_g, external=False)
+        out["ok"] = True
+        out["mensagem"] = "Anotação enviada ao GESTTA ✅"
+    except Exception as exc:
+        out["mensagem"] = f"Falha GESTTA: {exc}"
+    return out
+
+
+def _bloco_anotacoes_protocolo(protocolo_id, *, key_prefix=""):
+    """Histórico de anotações + form. Ao adicionar, grava e (se vinculado
+    a tarefa GESTTA) posta no chat."""
+    kp = f"{key_prefix}_{protocolo_id}"
+    try:
+        anots = listar_anotacoes_protocolo(protocolo_id)
+    except Exception as exc:
+        anots = []
+        st.caption(f"Erro lendo anotações: {exc}")
+    if anots:
+        for a in anots:
+            quando = (str(a.get("criado_em") or ""))[:16]
+            autor_a = a.get("autor") or "—"
+            st.markdown(f"**{quando}** · _{autor_a}_")
+            st.markdown(a.get("texto") or "")
+            st.divider()
+    else:
+        st.caption("Nenhuma anotação ainda.")
+    txt = st.text_area(
+        "Nova anotação (o que foi feito)",
+        key=f"anot_txt_{kp}",
+        placeholder="Ex.: Protocolo enviado na prefeitura, aguardando análise.",
+    )
+    manda_g = st.checkbox(
+        "Postar também no GESTTA", value=True, key=f"anot_g_{kp}",
+    )
+    if st.button("➕ Adicionar anotação", key=f"anot_add_{kp}", type="primary"):
+        if not (txt or "").strip():
+            st.warning("Escreva a anotação primeiro.")
+        else:
+            from auth import usuario_atual as _u_at
+            _u = _u_at() or {}
+            autor = _u.get("nome") or _u.get("email") or "Equipe CSM"
+            try:
+                criar_anotacao_protocolo(protocolo_id, txt.strip(), autor)
+            except Exception as exc:
+                st.error(f"Falha ao salvar: {exc}")
+                return
+            extra = ""
+            if manda_g:
+                try:
+                    extra = _postar_anotacao_gestta(
+                        protocolo_id, txt.strip(), autor,
+                    ).get("mensagem", "")
+                except Exception as exc:
+                    extra = f"GESTTA: {exc}"
+            st.success("Anotação salva. " + (extra or ""))
+            st.rerun()
 
 
 def atualizar_status_protocolo_com_gestta(
@@ -1224,6 +1312,8 @@ def _bloco_protocolos_redesim_dashboard():
                     with cb:
                         st.caption(p.get("data_solicitacao") or "—")
 
+                    with st.expander("🗒️ Anotações do que foi feito"):
+                        _bloco_anotacoes_protocolo(p["id"], key_prefix="dash")
                     if p["status"] == "Aprovada":
                         st.success("✅ Viabilidade deferida — pronto para Licenciamento")
                         if st.button(
