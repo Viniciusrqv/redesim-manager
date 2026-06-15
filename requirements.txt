@@ -28,6 +28,7 @@ pdfplumber>=0.11.4
 PyMuPDF>=1.24.10
 pypdfium2>=4.30.0
 Pillow>=10.3.0
+pytesseract>=0.3.10  # OCR p/ cartao CNPJ impresso como PDF (fonte sem Unicode) - requer tesseract-ocr no servidor (ver packages.txt)
 
 # HTTP (Telegram via API direta + BrasilAPI + ReceitaWS + GESTTA)
 requests>=2.32.3
