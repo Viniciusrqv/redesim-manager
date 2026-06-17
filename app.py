@@ -850,7 +850,7 @@ def _resumo_consolidado_dashboard():
     hoje_dt = _dt.now()
     prot_r = prot_y = prot_g = 0
     for p in em_and_prot:
-        ds = p.get("data_solicitacao")
+        ds = (p.get("atualizado_em") or "")[:10] if (p.get("atualizado_em") or "") > (p.get("criado_em") or "") else p.get("data_solicitacao")
         if not ds:
             prot_g += 1
             continue
@@ -1263,7 +1263,7 @@ def _bloco_protocolos_redesim_dashboard():
     hoje = _dt.now()
 
     def _dias(p):
-        ds = p.get("data_solicitacao")
+        ds = (p.get("atualizado_em") or "")[:10] if (p.get("atualizado_em") or "") > (p.get("criado_em") or "") else p.get("data_solicitacao")
         if not ds:
             return 0
         try:
