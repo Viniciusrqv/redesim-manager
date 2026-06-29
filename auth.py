@@ -144,9 +144,16 @@ def _restaurar_sessao_via_cookie() -> Optional[dict]:
         if sess and getattr(sess, "refresh_token", None):
             _salvar_refresh_token(sess.refresh_token)
         return st.session_state["auth_user"]
-    except Exception:
-        # Token inválido/expirado → limpa o cookie e força login manual
-        _limpar_refresh_token()
+    except Exception as exc:
+        _status = getattr(exc, "status", None)
+        _nome = type(exc).__name__
+        # So descarta o cookie se o token for REALMENTE invalido/expirado (HTTP 400/401/403).
+        # Erros transitorios (rede, timeout, Supabase fora, 5xx) NAO deslogam: mantem o cookie.
+        if _status in (400, 401, 403) or _nome in (
+            "AuthInvalidJwtError", "AuthSessionMissingError",
+            "AuthInvalidCredentialsError",
+        ):
+            _limpar_refresh_token()
         return None
 
 
