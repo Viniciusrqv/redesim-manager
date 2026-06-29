@@ -63,16 +63,10 @@ def _get_client():
 # ====================================================================
 def _get_cookies():
     """Retorna o controller de cookies ou None se a lib não existir."""
-    if "_cookies_ctrl" in st.session_state:
-        return st.session_state["_cookies_ctrl"]
     try:
         from streamlit_cookies_controller import CookieController
-        ctrl = CookieController(key="redesim_cookies")
-        st.session_state["_cookies_ctrl"] = ctrl
-        return ctrl
+        return CookieController(key="redesim_cookies")
     except Exception:
-        # Lib não instalada → desativa o "mantenha me conectado"
-        # graciosamente; login simplesmente exige email/senha a cada F5.
         return None
 
 
@@ -183,12 +177,10 @@ def exigir_login() -> dict:
 
     user = st.session_state.get("auth_user")
     if user:
+        _pend = st.session_state.pop("_pending_save_refresh", None)
+        if _pend:
+            _salvar_refresh_token(_pend)
         return user
-
-    # Dar um rerun na primeira vez para o CookieController inicializar
-    if "cookie_ctrl_init" not in st.session_state:
-        st.session_state["cookie_ctrl_init"] = True
-        st.rerun()
 
     # Tentar autologin via cookie (F5 nao deve deslogar)
     restaurado = _restaurar_sessao_via_cookie()
@@ -240,7 +232,7 @@ def _acao_login():
             # Se o checkbox "mantenha me conectado" está marcado,
             # salva o refresh_token no cookie (vale 30 dias).
             if manter and sess and getattr(sess, "refresh_token", None):
-                _salvar_refresh_token(sess.refresh_token)
+                st.session_state["_pending_save_refresh"] = sess.refresh_token
             # Limpa campos
             st.session_state.pop("login_email", None)
             st.session_state.pop("login_senha", None)
