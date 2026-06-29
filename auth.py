@@ -129,10 +129,7 @@ def _restaurar_sessao_via_cookie() -> Optional[dict]:
     try:
         cli = _get_client()
         # set_session aceita um refresh_token e devolve um access novo
-        resp = cli.auth.set_session(
-            access_token="dummy",  # ignorado quando refresh é válido
-            refresh_token=refresh,
-        )
+        resp = cli.auth.refresh_session(refresh)
         user = resp.user
         sess = resp.session
         if not user:
