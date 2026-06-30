@@ -9090,6 +9090,39 @@ def pagina_cobrancas_dominio():
             "o sistema) e quer registrar a cobrança aqui pra não "
             "esquecer de lançar no DOMÍNIO."
         )
+        # Autopreenche Cliente + CNPJ a partir do Cartao CNPJ (PDF).
+        _cartao = st.file_uploader(
+            "Cartao CNPJ (PDF) - opcional, autopreenche Cliente e CNPJ",
+            type=["pdf"], key="cobm_cartao",
+        )
+        if _cartao is not None:
+            _fid = f"{_cartao.name}:{getattr(_cartao, 'size', 0)}"
+            if st.session_state.get("_cobm_cartao_fid") != _fid:
+                import tempfile, os as _os
+                _tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                _tmp.write(_cartao.read())
+                _tmp.close()
+                _info = {}
+                try:
+                    _info = extrair_dados_cartao_cnpj(_tmp.name)
+                except Exception as _e:
+                    st.warning(f"Nao consegui ler o cartao: {_e}")
+                finally:
+                    try:
+                        _os.unlink(_tmp.name)
+                    except Exception:
+                        pass
+                _raz = (_info or {}).get("razao_social")
+                _cnpj = (_info or {}).get("cnpj")
+                if _raz:
+                    st.session_state["cobm_cli"] = _raz
+                if _cnpj:
+                    st.session_state["cobm_cnpj"] = _cnpj
+                st.session_state["_cobm_cartao_fid"] = _fid
+                if _raz or _cnpj:
+                    st.success(f"Cartao lido: {_raz or '-'} | {_cnpj or 'sem CNPJ'}")
+                else:
+                    st.warning("Li o PDF mas nao achei razao social/CNPJ. Preencha manualmente.")
         mcol1, mcol2 = st.columns(2)
         with mcol1:
             mc_cli = st.text_input(
