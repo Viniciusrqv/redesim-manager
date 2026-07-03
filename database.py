@@ -2167,7 +2167,40 @@ def substituir_protocolos(
         return cur.rowcount
 
 
+def atualizar_dados_protocolo(
+    protocolo_id: int,
+    *,
+    numero_protocolo: str | None = None,
+    data_solicitacao: str | None = None,
+    evento: str | None = None,
+    observacoes: str | None = None,
+) -> bool:
+    """Edita campos de um protocolo (numero, data, evento, observacoes).
+    So atualiza os campos passados (nao-None). Retorna True se mudou algo."""
+    campos: dict = {}
+    if numero_protocolo is not None:
+        campos["numero_protocolo"] = numero_protocolo
+    if data_solicitacao is not None:
+        campos["data_solicitacao"] = data_solicitacao
+    if evento is not None:
+        campos["evento"] = evento
+    if observacoes is not None:
+        campos["observacoes"] = observacoes
+    if not campos:
+        return False
+    sets = ", ".join(f"{k} = ?" for k in campos)
+    vals = list(campos.values())
+    vals.append(protocolo_id)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE protocolos_redesim SET {sets}, "
+            "atualizado_em = datetime('now','localtime') WHERE id = ?",
+            vals,
+        )
+        return cur.rowcount > 0
 
+
+def excluir_protocolo_redesim(protocolo_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
             "DELETE FROM protocolos_redesim WHERE id = ?",
