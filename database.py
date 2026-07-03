@@ -2167,7 +2167,7 @@ def substituir_protocolos(
         return cur.rowcount
 
 
-def excluir_protocolo_redesim(protocolo_id: int) -> bool:
+
     with get_conn() as conn:
         cur = conn.execute(
             "DELETE FROM protocolos_redesim WHERE id = ?",
