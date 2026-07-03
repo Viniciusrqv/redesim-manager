@@ -54,6 +54,7 @@ from database import (init_db, listar_empresas, criar_empresa,
                       buscar_protocolo_redesim, atualizar_status_protocolo,
                       excluir_protocolo_redesim, atualizar_empresa,
                       protocolos_problematicos_ativos, substituir_protocolos,
+                      atualizar_dados_protocolo,
                       # GESTTA
                       RISCOS_GESTTA, classificar_risco_tarefa_gestta,
                       TIPOS_TAREFA_GESTTA, TIPO_TAREFA_LABELS,
@@ -1314,6 +1315,45 @@ def _bloco_protocolos_redesim_dashboard():
 
                     with st.expander("🗒️ Anotações do que foi feito"):
                         _bloco_anotacoes_protocolo(p["id"], key_prefix="dash")
+                    with st.expander("Alterar protocolo"):
+                        _ec1, _ec2 = st.columns(2)
+                        with _ec1:
+                            _e_num = st.text_input(
+                                "No. do protocolo",
+                                value=p.get("numero_protocolo") or "",
+                                key=f"edit_num_{p['id']}",
+                            )
+                            _e_data = st.text_input(
+                                "Data solicitacao (AAAA-MM-DD)",
+                                value=p.get("data_solicitacao") or "",
+                                key=f"edit_data_{p['id']}",
+                            )
+                        with _ec2:
+                            _e_evt = st.text_input(
+                                "Evento",
+                                value=p.get("evento") or "",
+                                key=f"edit_evt_{p['id']}",
+                                placeholder="ex.: 998 - reabertura de viabilidade",
+                            )
+                        if st.button(
+                            "Salvar alteracoes",
+                            key=f"edit_save_{p['id']}",
+                            width="stretch",
+                        ):
+                            _mud = atualizar_dados_protocolo(
+                                p["id"],
+                                numero_protocolo=(_e_num.strip() or None),
+                                data_solicitacao=(_e_data.strip() or None),
+                                evento=(_e_evt.strip() or None),
+                            )
+                            if _mud:
+                                st.toast("Protocolo atualizado.")
+                                _invalidar_cache_db()
+                                import time as _t
+                                _t.sleep(0.6)
+                                st.rerun()
+                            else:
+                                st.warning("Nada para salvar.")
                     if p["status"] == "Aprovada":
                         st.success("✅ Viabilidade deferida — pronto para Licenciamento")
                         if st.button(
