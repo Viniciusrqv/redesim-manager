@@ -9219,8 +9219,28 @@ def pagina_cobrancas_dominio():
                 key="cobm_desc",
                 placeholder="Ex.: Renovação licença Cotia",
             )
+        import datetime as _dtmod
+        mrow1, mrow2 = st.columns(2)
+        with mrow1:
+            mc_data = st.date_input(
+                "Data da renovação / lançamento",
+                value=_dtmod.date.today(),
+                format="DD/MM/YYYY",
+                key="cobm_data",
+            )
+        with mrow2:
+            mc_com = st.number_input(
+                "Minha comissão (em reais, opcional)",
+                min_value=0.0, value=0.0, step=10.0, format="%.2f",
+                key="cobm_com",
+            )
+        mc_ja = st.checkbox(
+            "Já lançada no DOMÍNIO (registra direto no mês da data acima)",
+            value=True,
+            key="cobm_ja",
+        )
         if st.button(
-            "➕ Criar cobrança pendente",
+            "➕ Criar cobrança",
             type="primary",
             width="stretch",
             key="btn_cobm_criar",
@@ -9235,7 +9255,16 @@ def pagina_cobrancas_dominio():
                     descricao=mc_desc.strip() or None,
                     responsavel=quem,
                 )
-                st.success(f"✅ Cobrança #{cob_id} criada.")
+                if mc_ja:
+                    marcar_cobranca_lancada(
+                        cob_id,
+                        lancado_por=quem,
+                        comissao=(mc_com if mc_com > 0 else None),
+                        lancado_em=mc_data.isoformat(),
+                    )
+                    st.success(f"Cobranca #{cob_id} criada e lancada em {mc_data.strftime('%d/%m/%Y')}.")
+                else:
+                    st.success(f"Cobranca #{cob_id} criada (pendente).")
                 st.rerun()
 
 
