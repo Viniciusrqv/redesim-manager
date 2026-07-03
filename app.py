@@ -9085,6 +9085,29 @@ def pagina_cobrancas_dominio():
             col_gt, col_gc = st.columns(2)
             col_gt.success(f"💵 **Total geral:** {_brl2(grand_total)}")
             col_gc.info(f"💰 **Comissão acumulada:** {_brl2(grand_comiss)}")
+            st.divider()
+            st.caption("Abra um mes pra ver as empresas (valores em reais):")
+            _todas_lanc = listar_cobrancas_pendentes(status="lancada")
+            def _mkey(_l):
+                _s = str(_l.get("lancado_em") or "")
+                return (_s[0:4] + _s[5:7]) if len(_s) >= 7 else ""
+            import pandas as _pd2
+            for _m in meses:
+                _do_mes = [l for l in _todas_lanc if _mkey(l) == _m["mes_sort"]]
+                with st.expander(f"{_m['mes']} - {_m['qtd']} cobranca(s)"):
+                    if not _do_mes:
+                        st.caption("Sem detalhe.")
+                    else:
+                        st.dataframe(
+                            _pd2.DataFrame([{
+                                "Cliente": l.get("cliente_nome"),
+                                "Tipo": l.get("tipo_servico"),
+                                "Valor": f"{(l.get('valor_lancado') or 0):.2f}",
+                                "Comissao": f"{(l.get('comissao') or 0):.2f}",
+                                "Lancada em": str(l.get("lancado_em") or "")[:16],
+                            } for l in _do_mes]),
+                            width="stretch", hide_index=True,
+                        )
 
     # ============== TAB 4: Valores sugeridos ==============
     with tab_val:
