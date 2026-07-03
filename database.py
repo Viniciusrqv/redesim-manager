@@ -4890,18 +4890,19 @@ def marcar_cobranca_lancada(
     lancado_por: str | None = None,
     observacao: str | None = None,
     comissao: float | None = None,
+    lancado_em: str | None = None,
 ) -> None:
     with get_conn() as conn:
         conn.execute(
             """UPDATE cobrancas_dominio SET
                  status = 'lancada',
                  valor_lancado = COALESCE(?, valor_sugerido),
-                 lancado_em = datetime('now', 'localtime'),
+                 lancado_em = COALESCE(?, datetime('now', 'localtime')),
                  lancado_por = ?,
                  observacao = COALESCE(?, observacao),
                  comissao = ?
                WHERE id = ?""",
-            (valor_lancado, lancado_por, observacao, comissao, cobranca_id),
+            (valor_lancado, lancado_em, lancado_por, observacao, comissao, cobranca_id),
         )
 
 
