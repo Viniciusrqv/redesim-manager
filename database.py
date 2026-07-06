@@ -2039,6 +2039,7 @@ def listar_protocolos_empresa(empresa_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+@cache_read(ttl=120)
 def listar_todos_protocolos(apenas_problematicos: bool = False) -> list[dict]:
     """Retorna todos os protocolos de todas as empresas (para painel geral)."""
     sql = """
