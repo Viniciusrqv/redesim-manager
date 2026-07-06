@@ -325,7 +325,7 @@ def _replicar_status_no_gestta(
     # Envia via API GESTTA
     try:
         from utils.gestta_api import GesttaClient
-        cli = GesttaClient(jwt)
+        cli = GesttaClient(jwt, timeout=8)
         cli.adicionar_comentario_tarefa(gid, texto, external=False)
         out["ok"] = True
         out["mensagem"] = "Anotação enviada ao GESTTA ✅"
@@ -1351,7 +1351,7 @@ def _bloco_protocolos_redesim_dashboard():
                                 st.toast("Protocolo atualizado.")
                                 _invalidar_cache_db()
                                 import time as _t
-                                _t.sleep(0.6)
+                                pass
                                 st.rerun()
                             else:
                                 st.warning("Nada para salvar.")
@@ -1381,7 +1381,7 @@ def _bloco_protocolos_redesim_dashboard():
                                 st.toast(f"Licenciamento registrado (ID {novo_id}).")
                             _invalidar_cache_db()
                             import time as _t
-                            _t.sleep(0.8)
+                            pass
                             st.rerun()
                     else:
                         b1, b2, b3 = st.columns(3)
@@ -1403,7 +1403,7 @@ def _bloco_protocolos_redesim_dashboard():
                                 _mostrar_feedback_gestta(info_g, "Aprovada")
                                 _invalidar_cache_db()
                                 import time as _t
-                                _t.sleep(0.8)
+                                pass
                                 st.rerun()
                         with b2:
                             _k_recon = f"recon_{p['id']}"
@@ -1442,7 +1442,7 @@ def _bloco_protocolos_redesim_dashboard():
                                         st.toast("Reconsideração registrada! GESTTA anotado.")
                                         _mostrar_feedback_gestta(info_g, "Aguardando Reconsideração")
                                         _invalidar_cache_db()
-                                        import time as _t; _t.sleep(1.0); st.rerun()
+                                        import time as _t; pass; st.rerun()
                                 with _r2c:
                                     if st.button("← Cancelar", key=f"cancel_rc_{p['id']}", width="stretch"):
                                         st.session_state.pop(_k_recon, None)
@@ -1464,7 +1464,7 @@ def _bloco_protocolos_redesim_dashboard():
                                 _mostrar_feedback_gestta(info_g, "Cancelada")
                                 _invalidar_cache_db()
                                 import time as _t
-                                _t.sleep(0.8)
+                                pass
                                 st.rerun()
 
             # ── Protocolos aguardando reconsideração ──────────────────────
@@ -1516,7 +1516,7 @@ def _bloco_protocolos_redesim_dashboard():
                             st.toast(f"Novo protocolo {_new_proto.strip()} registrado! Retomando fluxo de viabilidade.")
                             _mostrar_feedback_gestta(info_g, "Inativa")
                             _invalidar_cache_db()
-                            import time as _t; _t.sleep(0.8); st.rerun()
+                            import time as _t; pass; st.rerun()
 
         with col_arrow:
             st.markdown(
@@ -1561,7 +1561,7 @@ def _bloco_protocolos_redesim_dashboard():
                             _mostrar_feedback_gestta(info_g, "Concluída")
                             _invalidar_cache_db()
                             import time as _t
-                            _t.sleep(0.8)
+                            pass
                             st.rerun()
                     with b2:
                         if st.button(
@@ -1580,7 +1580,7 @@ def _bloco_protocolos_redesim_dashboard():
                             _mostrar_feedback_gestta(info_g, "Indeferida")
                             _invalidar_cache_db()
                             import time as _t
-                            _t.sleep(0.8)
+                            pass
                             st.rerun()
 
         st.caption(
@@ -2015,7 +2015,7 @@ def pagina_dashboard():
                     sincronizar_tarefas_gestta()
                     _invalidar_cache_db()
                     st.toast("✅ GESTTA sincronizado!")
-                    import time as _t; _t.sleep(0.5); st.rerun()
+                    import time as _t; pass; st.rerun()
                 except Exception as _e:
                     st.error(f"Erro ao sincronizar: {_e}")
     with _sc3:
@@ -4825,7 +4825,7 @@ def pagina_empresas_redesim():
                                     # Pequeno delay pra usuario ler o feedback
                                     # do GESTTA antes do rerun (1.2s)
                                     import time as _time
-                                    _time.sleep(1.2)
+                                    pass
                                     st.rerun()
                                 else:
                                     st.error("Falha ao atualizar protocolo.")
@@ -5429,7 +5429,7 @@ def _aba_regularizacao():
                     f"{res['total_geral']}."
                 )
                 import time as _t
-                _t.sleep(1.5)
+                pass
                 st.rerun()
     with sb2:
         st.caption(
@@ -8495,7 +8495,7 @@ def pagina_fila_renovacao():
                     f"{res.get('atualizadas', 0)} atualizadas)."
                 )
             import time as _t
-            _t.sleep(1.0)
+            pass
             st.rerun()
     with sb2:
         st.caption(
@@ -8812,7 +8812,7 @@ def _render_modal_iniciar_protocolo(t: dict):
                         st.caption(f"GESTTA: não anotou ({_e_post}).")
                     st.session_state.pop("_fila_iniciar_id", None)
                     import time as _t
-                    _t.sleep(1.5)
+                    pass
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Erro: {exc}")
