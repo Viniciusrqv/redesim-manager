@@ -228,6 +228,7 @@ def _invalidar_cache_db():
     _cache_documentos_vigentes.clear()
     _cache_alvaras_bombeiros.clear()
     _cache_tarefas_gestta_pendentes.clear()
+    st.cache_data.clear()
 
 
 # =====================================================================
