@@ -1222,6 +1222,24 @@ def listar_empresas():
         )]
 
 
+def _insert_retornando_id(conn, sql, params):
+    """INSERT ... RETURNING id que funciona no SQLite E no Postgres.
+
+    No SQLite (3.35+) o RETURNING deixa o statement "em progresso" se a
+    linha não for consumida, e o commit seguinte estoura
+    "cannot commit transaction - SQL statements in progress".
+    Consumir o resultado aqui resolve nos dois bancos.
+    """
+    cur = conn.execute(sql, params)
+    try:
+        row = cur.fetchone()
+    except Exception:  # noqa: BLE001 - driver sem RETURNING
+        row = None
+    if row is not None:
+        return _extrair_id(row)
+    return _extrair_id(cur.lastrowid)
+
+
 def _extrair_id(lr):
     """Id novo apos INSERT: int (SQLite lastrowid) ou row do RETURNING (Postgres)."""
     if lr is None or isinstance(lr, int):
@@ -1239,12 +1257,12 @@ def _extrair_id(lr):
 def criar_empresa(razao_social, cnpj=None, endereco=None,
                   municipio=None, uf=None, responsavel=None):
     with get_conn() as conn:
-        cur = conn.execute(
+        return _insert_retornando_id(
+            conn,
             """INSERT INTO empresas (razao_social, cnpj, endereco, municipio, uf, responsavel)
                VALUES (?,?,?,?,?,?) RETURNING id""",
             (razao_social, cnpj, endereco, municipio, uf, responsavel),
         )
-        return _extrair_id(cur.lastrowid)
 
 
 def listar_processos():
@@ -1264,7 +1282,8 @@ def criar_processo(empresa_id, protocolo, tipo, status="Em análise",
                    canal_redesim="Online", motivo_presencial=None,
                    cnaes: Optional[Iterable[dict]] = None):
     with get_conn() as conn:
-        cur = conn.execute(
+        proc_id = _insert_retornando_id(
+            conn,
             """INSERT INTO processos
                (empresa_id, protocolo, tipo, status, risco, exige_sanitaria,
                 observacoes, canal_redesim, motivo_presencial)
@@ -1272,7 +1291,6 @@ def criar_processo(empresa_id, protocolo, tipo, status="Em análise",
             (empresa_id, protocolo, tipo, status, risco, exige_sanitaria,
              observacoes, canal_redesim, motivo_presencial),
         )
-        proc_id = _extrair_id(cur.lastrowid)
         if cnaes:
             conn.executemany(
                 """INSERT INTO processo_cnaes (processo_id, cnae, descricao, principal)
@@ -1336,7 +1354,7 @@ def atualizar_status(processo_id, novo_status, comentario=None,
                 """SELECT id, tipo FROM protocolos_redesim
                    WHERE empresa_id = ?
                      AND status NOT IN
-                       ('Aprovada','Concluída','Indeferida',
+                       ('Aprovada','Concluída','Deferida','Indeferida',
                         'Cancelada','Inativa')
                      AND substituido_por_id IS NULL""",
                 (emp_id,),
@@ -1345,13 +1363,23 @@ def atualizar_status(processo_id, novo_status, comentario=None,
             for p in ativos:
                 pid = dict(p)["id"]
                 ptipo = dict(p)["tipo"]
+                # Protocolos fora do REDESIM (Vigilância Sanitária) NÃO
+                # entram na cascata: correm em outro órgão, com prazo e
+                # deferimento próprios. Fechar junto daria baixa falsa e
+                # ainda pularia o gancho de cobrança (que só dispara em
+                # atualizar_status_protocolo_com_gestta).
+                if ptipo in TIPOS_PROTOCOLO_MANUAL:
+                    continue
                 # Viabilidade não tem "Concluída", só "Aprovada"
                 status_final = (
                     "Aprovada"
-                    if (ptipo == "Viabilidade"
+                    if (ptipo == TIPO_PROTOCOLO_VIABILIDADE
                         and novo_status == "Deferido")
                     else novo_status_protocolo
                 )
+                # Segurança: nunca gravar status que não existe pro tipo
+                if status_final not in status_por_tipo(ptipo):
+                    continue
                 # Usa atualizar_status_protocolo se existir, senão
                 # update direto pra não recursar
                 conn.execute(
@@ -1915,11 +1943,23 @@ def renovar_documento(doc_antigo_id, novo_data_vencimento,
 TIPO_PROTOCOLO_VIABILIDADE = "Viabilidade"
 TIPO_PROTOCOLO_LICENCIAMENTO = "Licenciamento"
 TIPO_PROTOCOLO_ALTERACAO = "Alteração de atuação (249)"
+# Vigilância Sanitária NÃO é protocolo REDESIM: corre por fora, direto no
+# órgão municipal/estadual (CVS), com numeração e fluxo próprios e sem
+# consulta automática por nº SPM/SPP.
+TIPO_PROTOCOLO_VIGILANCIA = "Vigilância Sanitária"
+
+# Tipos que nascem no REDESIM/VRE (têm consulta automática)
 TIPOS_PROTOCOLO_REDESIM = [
     TIPO_PROTOCOLO_VIABILIDADE,
     TIPO_PROTOCOLO_LICENCIAMENTO,
     TIPO_PROTOCOLO_ALTERACAO,
 ]
+# Tipos acompanhados manualmente (fora do REDESIM)
+TIPOS_PROTOCOLO_MANUAL = [
+    TIPO_PROTOCOLO_VIGILANCIA,
+]
+# Todos os tipos aceitos pela tabela protocolos_redesim
+TIPOS_PROTOCOLO = TIPOS_PROTOCOLO_REDESIM + TIPOS_PROTOCOLO_MANUAL
 
 # Status válidos (reais do portal Facilita-SP/REDESIM)
 STATUS_PROTOCOLO_VIABILIDADE = [
@@ -1939,13 +1979,51 @@ STATUS_PROTOCOLO_LICENCIAMENTO = [
     "Cancelada",
     "Inativa",
 ]
+# Fluxo próprio da Vigilância Sanitária (municipal / CVS)
+STATUS_PROTOCOLO_VIGILANCIA = [
+    "Protocolado",
+    "Em análise",
+    "Em exigência",
+    "Inspeção agendada",
+    "Deferida",
+    "Indeferida",
+    "Cancelada",
+]
+
+# Classificação de risco da Vigilância Sanitária (grava no campo 'evento')
+RISCO_VIGILANCIA = [
+    "Isenta",
+    "Baixo Risco",
+    "Licenciada",
+    "Alto Risco",
+]
 
 # Status que disparam alerta imediato (problema)
 STATUS_PROTOCOLO_PROBLEMA = {"Indeferida", "Cancelada", "Inativa"}
 # Status finalizados (pro verde do semáforo / timeline)
-STATUS_PROTOCOLO_OK = {"Aprovada", "Concluída"}
+STATUS_PROTOCOLO_OK = {"Aprovada", "Concluída", "Deferida"}
 # Status em andamento (amarelo)
-STATUS_PROTOCOLO_EM_ANDAMENTO = {"Em análise", "Pendente de avaliação do risco", "Coletor Nacional"}
+STATUS_PROTOCOLO_EM_ANDAMENTO = {
+    "Em análise", "Pendente de avaliação do risco", "Coletor Nacional",
+    "Protocolado", "Em exigência", "Inspeção agendada",
+}
+
+
+def status_por_tipo(tipo: str) -> list[str]:
+    """Lista de status válidos para o tipo de protocolo informado.
+
+    Ponto único de verdade — evita o if/else binário
+    (Viabilidade senão Licenciamento) espalhado pelo app, que ignorava
+    qualquer tipo novo.
+    """
+    if tipo == TIPO_PROTOCOLO_VIGILANCIA:
+        return STATUS_PROTOCOLO_VIGILANCIA
+    # "Alteração de atuação (249)" sempre usou os status de Licenciamento
+    # (vinha do if/else binário antigo) — manter, senão protocolos 249 já
+    # gravados ficam com status fora da lista e são rebaixados no form.
+    if tipo in (TIPO_PROTOCOLO_LICENCIAMENTO, TIPO_PROTOCOLO_ALTERACAO):
+        return STATUS_PROTOCOLO_LICENCIAMENTO
+    return STATUS_PROTOCOLO_VIABILIDADE
 
 
 def buscar_empresa_por_cnpj(cnpj: str) -> dict | None:
@@ -1977,12 +2055,12 @@ def buscar_empresa_por_cnpj(cnpj: str) -> dict | None:
 def criar_anotacao_protocolo(protocolo_id, texto, autor=None):
     """Registra uma anotação (log do que foi feito) num protocolo REDESIM."""
     with get_conn() as conn:
-        cur = conn.execute(
+        return _insert_retornando_id(
+            conn,
             "INSERT INTO protocolo_anotacoes (protocolo_id, texto, autor) "
             "VALUES (?, ?, ?) RETURNING id",
             (protocolo_id, texto, autor),
         )
-        return _extrair_id(cur.lastrowid)
 
 
 def listar_anotacoes_protocolo(protocolo_id):
@@ -2010,10 +2088,11 @@ def criar_protocolo_redesim(
     observacoes: str | None = None,
 ) -> int:
     """Cria um protocolo vinculado a uma empresa. Retorna o ID gerado."""
-    if tipo not in TIPOS_PROTOCOLO_REDESIM:
-        raise ValueError(f"Tipo inválido: {tipo}. Use {TIPOS_PROTOCOLO_REDESIM}")
+    if tipo not in TIPOS_PROTOCOLO:
+        raise ValueError(f"Tipo inválido: {tipo}. Use {TIPOS_PROTOCOLO}")
     with get_conn() as conn:
-        cur = conn.execute(
+        return _insert_retornando_id(
+            conn,
             """INSERT INTO protocolos_redesim
                (empresa_id, tipo, numero_protocolo, numero_solicitacao,
                 data_solicitacao, evento, orgao_registro, status, observacoes)
@@ -2021,7 +2100,6 @@ def criar_protocolo_redesim(
             (empresa_id, tipo, numero_protocolo, numero_solicitacao,
              data_solicitacao, evento, orgao_registro, status, observacoes),
         )
-        return _extrair_id(cur.lastrowid)
 
 
 def listar_protocolos_empresa(empresa_id: int) -> list[dict]:
@@ -2084,6 +2162,15 @@ def atualizar_status_protocolo(
         ).fetchone()
         if not atual:
             return None
+        # Não deixa gravar status que não existe para o tipo do protocolo
+        # (ex.: "Concluída" num protocolo de Vigilância Sanitária).
+        _tipo_atual = dict(atual).get("tipo")
+        _validos = status_por_tipo(_tipo_atual)
+        if novo_status not in _validos:
+            raise ValueError(
+                f"Status '{novo_status}' não é válido para o tipo "
+                f"'{_tipo_atual}'. Válidos: {_validos}"
+            )
         if observacoes is not None:
             conn.execute(
                 """UPDATE protocolos_redesim
@@ -3069,7 +3156,8 @@ def iniciar_protocolo_da_tarefa(
             )
 
         # Cria o protocolo
-        cur = conn.execute(
+        protocolo_id = _insert_retornando_id(
+            conn,
             """INSERT INTO protocolos_redesim
                  (empresa_id, tipo, numero_protocolo, status,
                   data_solicitacao, observacoes)
@@ -3077,7 +3165,6 @@ def iniciar_protocolo_da_tarefa(
             (emp_id, tipo_protocolo, numero_protocolo, status_inicial,
              data_solicitacao, observacoes),
         )
-        protocolo_id = _extrair_id(cur.lastrowid)
 
         # Vincula a tarefa GESTTA ao protocolo
         conn.execute(
@@ -4743,6 +4830,12 @@ def _classificar_tipo_cobranca(
     """Decide qual tipo de cobrança usar baseado no protocolo + tarefa."""
     nome = (gestta_task_nome or "").upper()
     tipo_prot = (protocolo.get("tipo") or "").upper()
+
+    # O tipo do protocolo manda: protocolo de Vigilância Sanitária é
+    # cobrança de VISA mesmo que a tarefa GESTTA não cite isso no nome
+    # (ou nem exista tarefa vinculada).
+    if protocolo.get("tipo") == TIPO_PROTOCOLO_VIGILANCIA:
+        return TIPO_COB_VISA
 
     if "BOMBEIRO" in nome or "AVCB" in nome or "CLCB" in nome:
         return TIPO_COB_AVCB

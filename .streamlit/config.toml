@@ -17,9 +17,26 @@ font                  = "sans serif"
 [server]
 # Limites de upload (PDFs, planilhas, etc.)
 maxUploadSize = 50
+# --- Performance (uso local, só Vinícius) ---
+# fileWatcherType = "none" desliga o polling constante de mudanças no filesystem,
+# que come CPU e adiciona latência. Se você editar o código, precisa Ctrl+C e reiniciar.
+fileWatcherType = "none"
+runOnSave = false
+headless = true
+# NÃO desligar enableCORS / enableXsrfProtection aqui: este arquivo é
+# versionado e sobe no deploy do Render, derrubando a proteção CSRF do
+# app público. Se precisar desses flags localmente, use variáveis de
+# ambiente (STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false) na sua máquina.
 
 [browser]
 gatherUsageStats = false
+
+[runner]
+# fastReruns permite cancelar rerun antigo quando você clica em algo novo
+fastReruns = true
+# magicEnabled e postScriptGC NÃO entram aqui: magicEnabled=false muda a
+# renderização de expressões soltas e postScriptGC=false segura memória —
+# os dois iriam junto no deploy do Render (plano com RAM limitada).
 
 [client]
 showSidebarNavigation = true

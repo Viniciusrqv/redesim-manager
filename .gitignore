@@ -92,6 +92,9 @@ logs/
 *.bak
 *.backup
 *_backup_*
+*.BAK_*
+*.old
+*.patch
 
 # --- Playwright ---
 playwright-report/

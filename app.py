@@ -43,10 +43,11 @@ from database import (init_db, listar_empresas, criar_empresa,
                       # Anotações de protocolo (log do que foi feito)
                       criar_anotacao_protocolo, listar_anotacoes_protocolo,
                       # Protocolos REDESIM
-                      TIPOS_PROTOCOLO_REDESIM, TIPO_PROTOCOLO_VIABILIDADE,
+                      TIPO_PROTOCOLO_VIABILIDADE,
                       TIPO_PROTOCOLO_LICENCIAMENTO,
-                      STATUS_PROTOCOLO_VIABILIDADE,
-                      STATUS_PROTOCOLO_LICENCIAMENTO,
+                      TIPO_PROTOCOLO_VIGILANCIA, TIPOS_PROTOCOLO,
+                      TIPOS_PROTOCOLO_MANUAL,
+                      RISCO_VIGILANCIA, status_por_tipo,
                       STATUS_PROTOCOLO_PROBLEMA, STATUS_PROTOCOLO_OK,
                       STATUS_PROTOCOLO_EM_ANDAMENTO,
                       buscar_empresa_por_cnpj, criar_protocolo_redesim,
@@ -309,6 +310,11 @@ def _replicar_status_no_gestta(
         "Indeferida": "🔴",
         "Cancelada": "🔴",
         "Inativa": "🔴",
+        # Vigilância Sanitária
+        "Protocolado": "🟡",
+        "Em exigência": "🟡",
+        "Inspeção agendada": "🟡",
+        "Deferida": "🟢",
     }.get(novo_status, "🔵")
 
     autor = _u.get("nome") or _u.get("email") or "Equipe CSM"
@@ -492,9 +498,15 @@ def atualizar_status_protocolo_com_gestta(
     )
     from auth import usuario_atual as _u_at
 
-    atualizado = atualizar_status_protocolo(
-        protocolo_id, novo_status, observacoes=observacoes,
-    )
+    try:
+        atualizado = atualizar_status_protocolo(
+            protocolo_id, novo_status, observacoes=observacoes,
+        )
+    except ValueError as _exc_st:
+        # Status incompatível com o tipo do protocolo: avisa na tela em
+        # vez de derrubar a página com traceback.
+        st.error(f"❌ {_exc_st}")
+        return None, {"ok": False, "mensagem": str(_exc_st)}
     info = {"ok": False}
     if atualizado:
         try:
@@ -527,6 +539,14 @@ def atualizar_status_protocolo_com_gestta(
             novo_status in ("Aprovada", "Concluída")
             and ("SANIT" in nome_tarefa or "VISA" in nome_tarefa
                  or "VIGILANCIA" in nome_tarefa)
+        )
+        # Protocolo do tipo "Vigilância Sanitária": o status terminal de
+        # sucesso é "Deferida" — sem isto o deferimento da VS não dispara
+        # a cobrança (regra do Eduardo: cobra quando sai o documento
+        # final, tanto VS quanto licença de funcionamento).
+        is_visa_emitida = is_visa_emitida or (
+            novo_status == "Deferida"
+            and atualizado.get("tipo") == TIPO_PROTOCOLO_VIGILANCIA
         )
 
         if is_cli_emitido or is_visa_emitida:
@@ -1258,7 +1278,17 @@ def _bloco_protocolos_redesim_dashboard():
                      and p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
                      and not p.get("substituido_por_id")]
 
-    todos_ativos = via_andamento + via_aprovadas + via_reconsideracao + lic_andamento
+    # Protocolos fora do REDESIM (Vigilância Sanitária) — acompanhamento
+    # manual, sem consulta automática por nº SPM/SPP.
+    manuais_andamento = [
+        p for p in todos
+        if p["tipo"] in TIPOS_PROTOCOLO_MANUAL
+        and p["status"] not in (STATUS_PROTOCOLO_OK | STATUS_PROTOCOLO_PROBLEMA)
+        and not p.get("substituido_por_id")
+    ]
+
+    todos_ativos = (via_andamento + via_aprovadas + via_reconsideracao
+                    + lic_andamento + manuais_andamento)
     if not todos_ativos:
         return
 
@@ -1587,6 +1617,36 @@ def _bloco_protocolos_redesim_dashboard():
             f"🔴 ≥ {DIAS_VERMELHO}d · 🟡 ≥ {DIAS_AMARELO}d · 🟢 ok. "
             "Histórico completo em **🏢 Empresas / REDESIM**."
         )
+
+        # ---- Fora do REDESIM (Vigilância Sanitária) ----
+        if manuais_andamento:
+            st.markdown("---")
+            st.markdown("##### 🧫 Fora do REDESIM — Vigilância Sanitária")
+            st.caption(
+                f"{len(manuais_andamento)} em andamento · "
+                "sem consulta automática, status atualizado na mão."
+            )
+            for p in manuais_andamento:
+                dias = _dias(p)
+                sinal = ("🔴" if dias >= DIAS_VERMELHO
+                         else "🟡" if dias >= DIAS_AMARELO else "🟢")
+                mc1, mc2 = st.columns([4, 1])
+                with mc1:
+                    st.markdown(f"**{p.get('razao_social', '—')}**")
+                    st.caption(
+                        f"`{p['numero_protocolo']}` · {p['status']} · "
+                        f"{dias}d"
+                        + (f" · {p['evento']}" if p.get("evento") else "")
+                        + (f" · {p['orgao_registro']}"
+                           if p.get("orgao_registro") else "")
+                    )
+                with mc2:
+                    st.markdown(f"### {sinal}")
+                    st.caption(p.get("data_solicitacao") or "—")
+            st.caption(
+                "Atualize o status em **🏢 Empresas / REDESIM → "
+                "Todos os protocolos**."
+            )
 
 
 def _bloco_documentos_dashboard():
@@ -2277,21 +2337,18 @@ def pagina_novo_processo():
             st.caption(
                 "Esses campos alimentam a **Timeline por empresa**. "
                 "Viabilidade = 1º passo (Junta Comercial); "
-                "Licenciamento = depois da viabilidade aprovada."
+                "Licenciamento = depois da viabilidade aprovada; "
+                "Vigilância Sanitária = processo próprio, fora do REDESIM."
             )
             rr1, rr2, rr3 = st.columns(3)
             default_tipo_rdm = _inferir_tipo_redesim_por_tipo_processo(tipo_ed)
             redesim_tipo = rr1.selectbox(
-                "Tipo do protocolo REDESIM *",
-                options=TIPOS_PROTOCOLO_REDESIM,
-                index=TIPOS_PROTOCOLO_REDESIM.index(default_tipo_rdm),
+                "Tipo do protocolo *",
+                options=TIPOS_PROTOCOLO,
+                index=TIPOS_PROTOCOLO.index(default_tipo_rdm),
                 key="rap_rdm_tipo",
             )
-            status_opts_rdm = (
-                STATUS_PROTOCOLO_VIABILIDADE
-                if redesim_tipo == TIPO_PROTOCOLO_VIABILIDADE
-                else STATUS_PROTOCOLO_LICENCIAMENTO
-            )
+            status_opts_rdm = status_por_tipo(redesim_tipo)
             redesim_status = rr2.selectbox(
                 "Status do protocolo *",
                 options=status_opts_rdm,
@@ -2303,6 +2360,26 @@ def pagina_novo_processo():
                 format="DD/MM/YYYY",
                 key="rap_rdm_data",
             )
+
+            # ----- Campos próprios da Vigilância Sanitária -----
+            redesim_evento = None
+            redesim_orgao = None
+            if redesim_tipo == TIPO_PROTOCOLO_VIGILANCIA:
+                vs1, vs2 = st.columns(2)
+                redesim_evento = vs1.selectbox(
+                    "Classificação de risco (VS)",
+                    options=RISCO_VIGILANCIA,
+                    key="rap_vs_risco",
+                )
+                redesim_orgao = vs2.text_input(
+                    "Órgão / município da VS",
+                    placeholder="Ex: Vigilância Sanitária de Cotia",
+                    key="rap_vs_orgao",
+                )
+                st.caption(
+                    "⚠️ Vigilância Sanitária não é consultada automaticamente "
+                    "no REDESIM — o status é atualizado manualmente."
+                )
 
             # ----- Substituição automática -----
             substituir_flag = False
@@ -2390,6 +2467,8 @@ def pagina_novo_processo():
                             redesim_tipo,
                             proto_ed.strip(),
                             data_solicitacao=redesim_data.isoformat(),
+                            evento=redesim_evento,
+                            orgao_registro=(redesim_orgao or None),
                             status=redesim_status,
                             observacoes=(obs_ed.strip() or None),
                         )
@@ -2420,8 +2499,12 @@ def pagina_novo_processo():
                     if (proto_rdm_id and substituir_flag
                             and painel_protos.get("problematicos")):
                         try:
+                            # tipo= evita que um protocolo de Vigilância
+                            # Sanitária marque uma Viabilidade como
+                            # substituída (fluxos distintos).
                             n_subs = substituir_protocolos(
                                 emp_id, proto_rdm_id,
+                                tipo=redesim_tipo,
                             )
                         except Exception as exc:  # noqa: BLE001
                             st.warning(
@@ -2488,6 +2571,55 @@ def pagina_novo_processo():
         st.markdown("##### 📜 Protocolos REDESIM já registrados para essa empresa")
         painel_m = _painel_protocolos_empresa(emp_id_sel)
 
+    # ----- Protocolo estruturado: FORA do form -----
+    # Dentro de st.form o selectbox não dispara rerun, então os campos que
+    # dependem do tipo (status e os campos de Vigilância Sanitária) nunca
+    # apareceriam e o status escolhido seria resetado no submit.
+    st.markdown("##### 🔄 Dados do protocolo")
+    st.caption(
+        "Esses campos alimentam a **Timeline por empresa**. "
+        "Viabilidade = 1º passo (Junta Comercial); "
+        "Licenciamento = depois da viabilidade aprovada; "
+        "Vigilância Sanitária = processo próprio, fora do REDESIM."
+    )
+    rr1, rr2, rr3 = st.columns(3)
+    redesim_tipo_m = rr1.selectbox(
+        "Tipo do protocolo *",
+        options=TIPOS_PROTOCOLO,
+        key="fp_rdm_tipo",
+    )
+    redesim_status_m = rr2.selectbox(
+        "Status do protocolo *",
+        options=status_por_tipo(redesim_tipo_m),
+        key="fp_rdm_status",
+    )
+    redesim_data_m = rr3.date_input(
+        "Data de solicitação *",
+        value=date.today(),
+        format="DD/MM/YYYY",
+        key="fp_rdm_data",
+    )
+
+    # ----- Campos próprios da Vigilância Sanitária -----
+    redesim_evento_m = None
+    redesim_orgao_m = None
+    if redesim_tipo_m == TIPO_PROTOCOLO_VIGILANCIA:
+        vsm1, vsm2 = st.columns(2)
+        redesim_evento_m = vsm1.selectbox(
+            "Classificação de risco (VS)",
+            options=RISCO_VIGILANCIA,
+            key="fp_vs_risco",
+        )
+        redesim_orgao_m = vsm2.text_input(
+            "Órgão / município da VS",
+            placeholder="Ex: Vigilância Sanitária de Cotia",
+            key="fp_vs_orgao",
+        )
+        st.caption(
+            "⚠️ Vigilância Sanitária não é consultada automaticamente "
+            "no REDESIM — o status é atualizado manualmente."
+        )
+
     with st.form("form_processo"):
         c1, c2, c3 = st.columns(3)
         protocolo = c1.text_input(
@@ -2511,35 +2643,7 @@ def pagina_novo_processo():
             placeholder="Ex: Município não integrado / Exige doc. original",
         )
 
-        # ----- Seção REDESIM (protocolo estruturado) -----
-        st.markdown("##### 🔄 Dados do protocolo REDESIM")
-        st.caption(
-            "Esses campos alimentam a **Timeline por empresa**. "
-            "Viabilidade = 1º passo (Junta Comercial); "
-            "Licenciamento = depois da viabilidade aprovada."
-        )
-        rr1, rr2, rr3 = st.columns(3)
-        redesim_tipo_m = rr1.selectbox(
-            "Tipo do protocolo REDESIM *",
-            options=TIPOS_PROTOCOLO_REDESIM,
-            key="fp_rdm_tipo",
-        )
-        status_opts_rdm_m = (
-            STATUS_PROTOCOLO_VIABILIDADE
-            if redesim_tipo_m == TIPO_PROTOCOLO_VIABILIDADE
-            else STATUS_PROTOCOLO_LICENCIAMENTO
-        )
-        redesim_status_m = rr2.selectbox(
-            "Status do protocolo *",
-            options=status_opts_rdm_m,
-            key="fp_rdm_status",
-        )
-        redesim_data_m = rr3.date_input(
-            "Data de solicitação *",
-            value=date.today(),
-            format="DD/MM/YYYY",
-            key="fp_rdm_data",
-        )
+        # (Tipo / status / campos de VS ficam FORA do form — ver acima)
 
         # Checkbox de substituição — só se houver problemáticos pendentes
         substituir_flag_m = False
@@ -2649,6 +2753,8 @@ def pagina_novo_processo():
                     redesim_tipo_m,
                     protocolo.strip(),
                     data_solicitacao=redesim_data_m.isoformat(),
+                    evento=redesim_evento_m,
+                    orgao_registro=(redesim_orgao_m or None),
                     status=redesim_status_m,
                     observacoes=(obs.strip() or None),
                 )
@@ -2666,6 +2772,7 @@ def pagina_novo_processo():
                 try:
                     n_subs_m = substituir_protocolos(
                         emp_id_sel, proto_rdm_id_m,
+                        tipo=redesim_tipo_m,
                     )
                 except Exception as exc:  # noqa: BLE001
                     st.warning(
@@ -4750,11 +4857,7 @@ def pagina_empresas_redesim():
 
                         st.markdown("---")
                         # Botões de ação
-                        status_opcoes = (
-                            STATUS_PROTOCOLO_VIABILIDADE
-                            if proto["tipo"] == TIPO_PROTOCOLO_VIABILIDADE
-                            else STATUS_PROTOCOLO_LICENCIAMENTO
-                        )
+                        status_opcoes = status_por_tipo(proto["tipo"])
                         st.caption(
                             "ℹ️ Ao marcar **Indeferida / Cancelada / Inativa**, "
                             "o campo abaixo fica obrigatório — anote o motivo e "
@@ -4860,7 +4963,7 @@ def pagina_empresas_redesim():
             cf1, cf2, cf3 = st.columns(3)
             filtro_tipo = cf1.selectbox(
                 "Tipo",
-                options=["(todos)"] + TIPOS_PROTOCOLO_REDESIM,
+                options=["(todos)"] + TIPOS_PROTOCOLO,
                 key="filtro_tipo_painel",
             )
             status_unicos = sorted({p["status"] for p in protos_todos})
@@ -8751,7 +8854,7 @@ def _render_modal_iniciar_protocolo(t: dict):
     with fcol2:
         tipo_protocolo = st.radio(
             "Tipo",
-            options=["Viabilidade", "Licenciamento"],
+            options=TIPOS_PROTOCOLO,
             key=f"fila_tipo_prot_{t['id']}",
             help="Comece pela Viabilidade (geralmente). "
                  "Quando o Facilita reaproveitar o protocolo no "
@@ -8783,12 +8886,18 @@ def _render_modal_iniciar_protocolo(t: dict):
                 )
             else:
                 try:
+                    # Status inicial coerente com o tipo: VS começa em
+                    # "Protocolado", os tipos REDESIM em "Em análise".
+                    _st_ini = status_por_tipo(tipo_protocolo)[0] \
+                        if tipo_protocolo == TIPO_PROTOCOLO_VIGILANCIA \
+                        else "Em análise"
                     pid = iniciar_protocolo_da_tarefa(
                         tarefa_id=t["id"],
                         numero_protocolo=numero.strip(),
                         tipo_protocolo=tipo_protocolo,
                         data_solicitacao=str(data_sol),
                         observacoes=obs.strip() or None,
+                        status_inicial=_st_ini,
                     )
                     st.success(
                         f"✅ Protocolo #{pid} cadastrado! "
@@ -8801,7 +8910,7 @@ def _render_modal_iniciar_protocolo(t: dict):
                         _r_post = _replicar_status_no_gestta(
                             {"id": pid, "numero_protocolo": numero.strip(),
                              "tipo": tipo_protocolo},
-                            "Em análise",
+                            _st_ini,
                             observacoes="Protocolo criado/registrado via REDESIM Manager.",
                         )
                         if _r_post.get("ok"):

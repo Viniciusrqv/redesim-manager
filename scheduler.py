@@ -20,12 +20,15 @@ import schedule
 
 from datetime import datetime
 
-from config import DIAS_AMARELO, DIAS_VERMELHO, HORARIO_LEMBRETE, HORARIOS_LEMBRETE
+from config import (DIAS_AMARELO, DIAS_VERMELHO,
+                    DIAS_AMARELO_MANUAL, DIAS_VERMELHO_MANUAL,
+                    HORARIO_LEMBRETE, HORARIOS_LEMBRETE)
 from database import (init_db, processos_atrasados,
                       documentos_proximos_vencimento,
                       alvaras_vencendo,
                       listar_todos_protocolos, get_conn,
                       STATUS_PROTOCOLO_OK, STATUS_PROTOCOLO_PROBLEMA,
+                      TIPOS_PROTOCOLO_MANUAL,
                       pendencias_em_alerta,
                       cnaes_pendentes_verificacao,
                       listar_cobrancas_pendentes,
@@ -237,9 +240,16 @@ def checar_protocolos_redesim():
         dias = (hoje - d0).days
         p["_dias"] = dias
         p["_razao_social"] = emp_map.get(p["empresa_id"], "?")
-        if dias >= DIAS_VERMELHO:
+        # Protocolos fora do REDESIM (Vigilância Sanitária) levam semanas
+        # no órgão municipal. Com a régua do REDESIM (3/4 dias) toda VS
+        # viraria "atraso crítico" na primeira semana.
+        if p.get("tipo") in TIPOS_PROTOCOLO_MANUAL:
+            lim_amarelo, lim_vermelho = DIAS_AMARELO_MANUAL, DIAS_VERMELHO_MANUAL
+        else:
+            lim_amarelo, lim_vermelho = DIAS_AMARELO, DIAS_VERMELHO
+        if dias >= lim_vermelho:
             vermelhos.append(p)
-        elif dias >= DIAS_AMARELO:
+        elif dias >= lim_amarelo:
             amarelos.append(p)
 
     if not amarelos and not vermelhos:

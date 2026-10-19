@@ -31,6 +31,11 @@ DIAS_VERMELHO = int(os.getenv("DIAS_VERMELHO", "4"))
 # DIAS_ALERTA fica como alias do DIAS_VERMELHO para compatibilidade com
 # código antigo que ainda importa a constante.
 DIAS_ALERTA = DIAS_VERMELHO
+# Protocolos acompanhados manualmente (Vigilância Sanitária) correm em
+# órgão municipal e levam semanas — régua própria, senão viram "atraso
+# crítico" na primeira semana.
+DIAS_AMARELO_MANUAL = int(os.getenv("DIAS_AMARELO_MANUAL", "20"))
+DIAS_VERMELHO_MANUAL = int(os.getenv("DIAS_VERMELHO_MANUAL", "30"))
 # HORARIO_LEMBRETE aceita um único horário ("09:00") ou uma lista
 # separada por vírgula ("10:00,15:00"). Em ambos os casos, expomos
 # também HORARIOS_LEMBRETE como lista para o scheduler.
